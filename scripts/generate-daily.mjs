@@ -43,8 +43,22 @@ const DOCS_DIR = join(ROOT, "docs", "daily");
 const IMG_EXT = "png"; // Daily images are generated as high-res PNGs
 const SPECIES_PATH = join(ROOT, "lib", "data", "species.json");
 
-const GEMINI_MODEL = "gemini-3.1-flash-image-preview";
+const GEMINI_MODEL = "gemini-3.1-flash-image";
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
+
+// Generation scope & performance configuration
+const US_ONLY = true; // Set to false to enable Rest of World (ROW) generation in the future
+const CONCURRENCY = 5; // Number of parallel API requests (safe for billing-enabled keys)
+
+const US_STATES = new Set([
+	"AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+	"HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+	"MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+	"NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+	"SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+	"DC"
+]);
+
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -266,7 +280,13 @@ async function run() {
 	}
 
 	const allSpecies = JSON.parse(readFileSync(SPECIES_PATH, "utf8"));
-	const states = targetStates ?? Object.keys(allSpecies);
+	
+	let states = targetStates;
+	if (!states) {
+		const allKeys = Object.keys(allSpecies);
+		states = US_ONLY ? allKeys.filter((s) => US_STATES.has(s)) : allKeys;
+	}
+
 
 	console.log(
 		`Generating ${states.length} flowers for ${targetDate}` +
@@ -278,92 +298,110 @@ async function run() {
 	let fail = 0;
 	const failedStates = [];
 
-	for (const state of states) {
-		const stateDir = join(DOCS_DIR, state);
-		const imgPath = join(stateDir, `${targetDate}.${IMG_EXT}`);
-		const jsonPath = join(stateDir, `${targetDate}.json`);
+	let index = 0;
+	async function worker() {
+		while (index < states.length) {
+			const state = states[index++];
+			if (!state) continue;
 
-		// Two skip modes:
-		//
-		//   default ("heal"):     skip iff BOTH files exist AND image is non-zero.
-		//                         Garbage from earlier failed runs gets regenerated.
-		//   --missing-only:       skip if ANY trace exists. Safest for backfills —
-		//                         never overwrites a partial that might be real data.
-		const imgExists = existsSync(imgPath);
-		const jsonExists = existsSync(jsonPath);
-		const imgValid = imgExists && statSync(imgPath).size > 0;
+			const stateDir = join(DOCS_DIR, state);
+			const imgPath = join(stateDir, `${targetDate}.${IMG_EXT}`);
+			const jsonPath = join(stateDir, `${targetDate}.json`);
 
-		if (imgValid && jsonExists) {
-			console.log(`  ${state}: already complete, skipping`);
-			skip++;
-			continue;
-		}
-		if (missingOnly && (imgExists || jsonExists)) {
-			console.log(
-				`  ${state}: partial output present, skipping (--missing-only)`,
-			);
-			skip++;
-			continue;
-		}
+			// Two skip modes:
+			//
+			//   default ("heal"):     skip iff BOTH files exist AND image is non-zero.
+			//                         Garbage from earlier failed runs gets regenerated.
+			//   --missing-only:       skip if ANY trace exists. Safest for backfills —
+			//                         never overwrites a partial that might be real data.
+			const imgExists = existsSync(imgPath);
+			const jsonExists = existsSync(jsonPath);
+			const imgValid = imgExists && statSync(imgPath).size > 0;
 
-		const species = allSpecies[state];
-		if (!species) {
-			console.warn(`  ${state}: no species data, skipping`);
-			skip++;
-			continue;
-		}
-
-		const picked = pickSpecies(species, state, targetDate);
-		console.log(`  ${state}: ${picked.common} (${picked.latin})`);
-
-		try {
-			mkdirSync(stateDir, { recursive: true });
-
-			if (dryRun) {
-				writeFileSync(imgPath, Buffer.alloc(0));
-				writeFileSync(
-					jsonPath,
-					JSON.stringify({
-						common: picked.common,
-						latin: picked.latin,
-						blurb: `${picked.common} blooming today.`,
-						generatedAt: new Date().toISOString(),
-					}),
-				);
-			} else {
-				const { imageData, blurb } = await generateImage(apiKey, picked, state);
-				writeFileSync(imgPath, Buffer.from(imageData, "base64"));
-				writeFileSync(
-					jsonPath,
-					JSON.stringify({
-						common: picked.common,
-						latin: picked.latin,
-						blurb,
-						generatedAt: new Date().toISOString(),
-					}),
-				);
+			if (imgValid && jsonExists) {
+				console.log(`  ${state}: already complete, skipping`);
+				skip++;
+				continue;
 			}
-			ok++;
-		} catch (e) {
-			console.error(`  ${state}: FAILED — ${e.message}`);
-			fail++;
-			failedStates.push(state);
-		}
+			if (missingOnly && (imgExists || jsonExists)) {
+				console.log(
+					`  ${state}: partial output present, skipping (--missing-only)`,
+				);
+				skip++;
+				continue;
+			}
 
-		// Avoid hammering the free-tier rate limit (10 rpm)
-		if (!dryRun) await new Promise((r) => setTimeout(r, 6500));
+			const species = allSpecies[state];
+			if (!species) {
+				console.warn(`  ${state}: no species data, skipping`);
+				skip++;
+				continue;
+			}
+
+			const picked = pickSpecies(species, state, targetDate);
+			console.log(`  ${state}: ${picked.common} (${picked.latin})`);
+
+			try {
+				mkdirSync(stateDir, { recursive: true });
+
+				if (dryRun) {
+					writeFileSync(imgPath, Buffer.alloc(0));
+					writeFileSync(
+						jsonPath,
+						JSON.stringify({
+							common: picked.common,
+							latin: picked.latin,
+							blurb: `${picked.common} blooming today.`,
+							generatedAt: new Date().toISOString(),
+						}),
+					);
+				} else {
+					const { imageData, blurb } = await generateImage(apiKey, picked, state);
+					writeFileSync(imgPath, Buffer.from(imageData, "base64"));
+					writeFileSync(
+						jsonPath,
+						JSON.stringify({
+							common: picked.common,
+							latin: picked.latin,
+							blurb,
+							generatedAt: new Date().toISOString(),
+						}),
+					);
+				}
+				ok++;
+			} catch (e) {
+				console.error(`  ${state}: FAILED — ${e.message}`);
+				fail++;
+				failedStates.push(state);
+			}
+		}
 	}
 
-	console.log(`\nDone: ${ok} generated, ${skip} skipped, ${fail} failed`);
+	// Start workers concurrently
+	const workers = Array.from({ length: Math.min(CONCURRENCY, states.length) }, () => worker());
+	await Promise.all(workers);
+
+
+	await archiveOldPngs();
+
+	const costPerImage = 0.03;
+	const totalCost = dryRun ? 0 : ok * costPerImage;
+	console.log(`\n========================================`);
+	console.log(`Daily Generation Summary (${targetDate}):`);
+	console.log(`- Generated: ${ok} images`);
+	console.log(`- Skipped:   ${skip} regions`);
+	console.log(`- Failed:    ${fail} regions`);
+	console.log(`- Est. Cost: $${totalCost.toFixed(2)} USD (at $${costPerImage}/image)`);
+	console.log(`========================================`);
+
 	if (failedStates.length) {
 		console.log(`Failed states: ${failedStates.join(",")}`);
 		console.log(
 			`Re-run with: --states ${failedStates.join(",")} --missing-only`,
 		);
 	}
-
-	await archiveOldPngs();
 }
+
 
 const WAREHOUSE_DIR = "/Users/scottybe/workspace/shared/design-assets/daily";
 
