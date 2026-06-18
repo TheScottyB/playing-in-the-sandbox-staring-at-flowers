@@ -12,20 +12,14 @@
 				"promoText": "Wake up to your regional bloom ritual. Try offline semantic search, go back 7 days, or travel to other states. Lock in our limited Founders Edition Lifetime VIP pass!",
 				"releaseNotes": "Introducing the Specimen Premium Pass! You can now unlock unlimited semantic searches using our offline Vector Vibe Search. We've also added the 7-day archive and regional Travel Mode so you can explore native flowers across all supported regions.",
 				"keywords": [
-					"flower",
+					"flowers",
 					"native",
-					"wildflower",
-					"botanical",
-					"ai",
-					"vector",
-					"search",
-					"identify",
-					"nature",
-					"bloom",
 					"daily",
-					"discover",
-					"flora",
-					"plant"
+					"wildflowers",
+					"bloom",
+					"nature",
+					"seasons",
+					"states"
 				],
 				"marketingUrl": "https://github.com/TheScottyB/playing-in-the-sandbox-staring-at-flowers",
 				"supportUrl": "https://github.com/TheScottyB/playing-in-the-sandbox-staring-at-flowers/issues",
@@ -34,7 +28,7 @@
 				"privacyPolicyUrl": "https://thescottyb.github.io/playing-in-the-sandbox-staring-at-flowers/privacy.html"
 			}
 		},
-		"categories": ["ENTERTAINMENT"],
+		"categories": ["ENTERTAINMENT", "LIFESTYLE"],
 		"advisory": {
 			"ageRatingOverride": "NONE",
 			"alcoholTobaccoOrDrugUseOrReferences": "NONE",
