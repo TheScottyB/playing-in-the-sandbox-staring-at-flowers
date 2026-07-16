@@ -35,6 +35,7 @@ docs/
 .maestro/
 .playwright-cli/
 .claude/
+shared/design-assets/
 
 # Dependencies and local configuration
 node_modules/

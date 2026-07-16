@@ -6,6 +6,7 @@
 	"scripts": {
 		"start": "expo start",
 		"typecheck": "tsc --noEmit",
+		"test": "echo 'No unit tests configured'",
 		"lint": "biome check .",
 		"db:compile": "node scripts/compile_species_db.mjs",
 		"db:smoke": "node scripts/db-smoke.mjs",

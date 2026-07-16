@@ -35,22 +35,22 @@ export const DEFAULT_FLOWER: DefaultFlower = {
 		{
 			time: "sunrise",
 			fromHour: 5,
-			image: require("../assets/defaults/sunrise.png"),
+			image: require("../../assets/defaults/sunrise.png"),
 		},
 		{
 			time: "midday",
 			fromHour: 10,
-			image: require("../assets/defaults/midday.png"),
+			image: require("../../assets/defaults/midday.png"),
 		},
 		{
 			time: "sunset",
 			fromHour: 17,
-			image: require("../assets/defaults/sunset.png"),
+			image: require("../../assets/defaults/sunset.png"),
 		},
 		{
 			time: "dusk",
 			fromHour: 20,
-			image: require("../assets/defaults/dusk.png"),
+			image: require("../../assets/defaults/dusk.png"),
 		},
 	],
 };
