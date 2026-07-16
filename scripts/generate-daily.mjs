@@ -43,7 +43,12 @@ const DOCS_DIR = join(ROOT, "docs", "daily");
 const IMG_EXT = "png"; // Daily images are generated as high-res PNGs
 const SPECIES_PATH = join(ROOT, "lib", "data", "species.json");
 
-const GEMINI_MODEL = "gemini-3.1-flash-image";
+const GEMINI_MODELS = [
+	"gemini-3-pro-image",
+	"gemini-3.1-flash-lite-image",
+	"gemini-3.1-flash-image",
+	"gemini-2.5-flash-image-preview",
+];
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 // Generation scope & performance configuration
@@ -168,7 +173,7 @@ function getRegionPromptText(state) {
 	return `the "${state}" region of the US`;
 }
 
-async function generateImage(apiKey, species, state) {
+async function generateImage(apiKey, species, state, modelName) {
 	const month = new Date().toLocaleString("en-US", { month: "long" });
 	const regionText = getRegionPromptText(state);
 	const prompt =
@@ -184,7 +189,7 @@ async function generateImage(apiKey, species, state) {
 		generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
 	};
 
-	const url = `${GEMINI_BASE}/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+	const url = `${GEMINI_BASE}/models/${modelName}:generateContent?key=${apiKey}`;
 
 	// Retry on 429 (rate limit) and 5xx (transient) with exponential backoff.
 	// Free-tier Gemini occasionally rate-limits even at 9 rpm, especially for
@@ -240,7 +245,7 @@ async function generateImage(apiKey, species, state) {
 			console.error(
 				"======================================================================\n",
 			);
-			process.exit(1);
+			throw new Error("Quota Exhausted for this model");
 		}
 
 		lastErr = new Error(`Gemini ${resp.status}: ${errorMessage.slice(0, 200)}`);
@@ -356,17 +361,30 @@ async function run() {
 						}),
 					);
 				} else {
-					const { imageData, blurb } = await generateImage(apiKey, picked, state);
-					writeFileSync(imgPath, Buffer.from(imageData, "base64"));
-					writeFileSync(
-						jsonPath,
-						JSON.stringify({
-							common: picked.common,
-							latin: picked.latin,
-							blurb,
-							generatedAt: new Date().toISOString(),
-						}),
-					);
+					// Round-robin start index, falling back to other models on failure
+					let success = false;
+					for (let i = 0; i < GEMINI_MODELS.length; i++) {
+						const modelName = GEMINI_MODELS[(index + i) % GEMINI_MODELS.length];
+						console.log(`  ${state}: Trying model ${modelName}`);
+						try {
+							const { imageData, blurb } = await generateImage(apiKey, picked, state, modelName);
+							writeFileSync(imgPath, Buffer.from(imageData, "base64"));
+							writeFileSync(
+								jsonPath,
+								JSON.stringify({
+									common: picked.common,
+									latin: picked.latin,
+									blurb,
+									generatedAt: new Date().toISOString(),
+								}),
+							);
+							success = true;
+							break; // Success!
+						} catch (err) {
+							console.log(`  ${state}: Model ${modelName} failed (${err.message})`);
+							if (i === GEMINI_MODELS.length - 1) throw err; // All models failed
+						}
+					}
 				}
 				ok++;
 			} catch (e) {
