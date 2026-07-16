@@ -56,14 +56,58 @@ const US_ONLY = true; // Set to false to enable Rest of World (ROW) generation i
 const CONCURRENCY = 5; // Number of parallel API requests (safe for billing-enabled keys)
 
 const US_STATES = new Set([
-	"AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
-	"HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
-	"MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
-	"NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
-	"SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
-	"DC"
+	"AL",
+	"AK",
+	"AZ",
+	"AR",
+	"CA",
+	"CO",
+	"CT",
+	"DE",
+	"FL",
+	"GA",
+	"HI",
+	"ID",
+	"IL",
+	"IN",
+	"IA",
+	"KS",
+	"KY",
+	"LA",
+	"ME",
+	"MD",
+	"MA",
+	"MI",
+	"MN",
+	"MS",
+	"MO",
+	"MT",
+	"NE",
+	"NV",
+	"NH",
+	"NJ",
+	"NM",
+	"NY",
+	"NC",
+	"ND",
+	"OH",
+	"OK",
+	"OR",
+	"PA",
+	"RI",
+	"SC",
+	"SD",
+	"TN",
+	"TX",
+	"UT",
+	"VT",
+	"VA",
+	"WA",
+	"WV",
+	"WI",
+	"WY",
+	"DC",
 ]);
-
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -227,7 +271,7 @@ async function generateImage(apiKey, species, state, modelName) {
 		let errorObj;
 		try {
 			errorObj = JSON.parse(text);
-		} catch (e) {}
+		} catch (_e) {}
 
 		const errorMessage = errorObj?.error?.message || text;
 		const isBillingOrQuota =
@@ -285,13 +329,12 @@ async function run() {
 	}
 
 	const allSpecies = JSON.parse(readFileSync(SPECIES_PATH, "utf8"));
-	
+
 	let states = targetStates;
 	if (!states) {
 		const allKeys = Object.keys(allSpecies);
 		states = US_ONLY ? allKeys.filter((s) => US_STATES.has(s)) : allKeys;
 	}
-
 
 	console.log(
 		`Generating ${states.length} flowers for ${targetDate}` +
@@ -362,12 +405,17 @@ async function run() {
 					);
 				} else {
 					// Round-robin start index, falling back to other models on failure
-					let success = false;
+					let _success = false;
 					for (let i = 0; i < GEMINI_MODELS.length; i++) {
 						const modelName = GEMINI_MODELS[(index + i) % GEMINI_MODELS.length];
 						console.log(`  ${state}: Trying model ${modelName}`);
 						try {
-							const { imageData, blurb } = await generateImage(apiKey, picked, state, modelName);
+							const { imageData, blurb } = await generateImage(
+								apiKey,
+								picked,
+								state,
+								modelName,
+							);
 							writeFileSync(imgPath, Buffer.from(imageData, "base64"));
 							writeFileSync(
 								jsonPath,
@@ -378,10 +426,12 @@ async function run() {
 									generatedAt: new Date().toISOString(),
 								}),
 							);
-							success = true;
+							_success = true;
 							break; // Success!
 						} catch (err) {
-							console.log(`  ${state}: Model ${modelName} failed (${err.message})`);
+							console.log(
+								`  ${state}: Model ${modelName} failed (${err.message})`,
+							);
 							if (i === GEMINI_MODELS.length - 1) throw err; // All models failed
 						}
 					}
@@ -396,9 +446,11 @@ async function run() {
 	}
 
 	// Start workers concurrently
-	const workers = Array.from({ length: Math.min(CONCURRENCY, states.length) }, () => worker());
+	const workers = Array.from(
+		{ length: Math.min(CONCURRENCY, states.length) },
+		() => worker(),
+	);
 	await Promise.all(workers);
-
 
 	await archiveOldPngs();
 
@@ -409,7 +461,9 @@ async function run() {
 	console.log(`- Generated: ${ok} images`);
 	console.log(`- Skipped:   ${skip} regions`);
 	console.log(`- Failed:    ${fail} regions`);
-	console.log(`- Est. Cost: $${totalCost.toFixed(2)} USD (at $${costPerImage}/image)`);
+	console.log(
+		`- Est. Cost: $${totalCost.toFixed(2)} USD (at $${costPerImage}/image)`,
+	);
 	console.log(`========================================`);
 
 	if (failedStates.length) {
@@ -420,7 +474,6 @@ async function run() {
 	}
 }
 
-
 const WAREHOUSE_DIR = "/Users/scottybe/workspace/shared/design-assets/daily";
 
 async function archiveOldPngs() {
@@ -428,7 +481,7 @@ async function archiveOldPngs() {
 		"\nRunning rolling buffer cleanup (archiving PNGs older than 7 days)...",
 	);
 	const todayStr = targetDate;
-	const todayDate = new Date(todayStr + "T12:00:00");
+	const todayDate = new Date(`${todayStr}T12:00:00`);
 
 	let archivedCount = 0;
 
@@ -443,8 +496,8 @@ async function archiveOldPngs() {
 			if (!file.endsWith(".png")) continue;
 
 			const fileDateStr = file.replace(".png", "");
-			const fileDate = new Date(fileDateStr + "T12:00:00");
-			if (isNaN(fileDate.getTime())) continue;
+			const fileDate = new Date(`${fileDateStr}T12:00:00`);
+			if (Number.isNaN(fileDate.getTime())) continue;
 
 			const diffTime = todayDate.getTime() - fileDate.getTime();
 			const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));

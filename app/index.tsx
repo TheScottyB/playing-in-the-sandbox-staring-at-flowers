@@ -95,7 +95,7 @@ const MONTH_SHORT = [
  * at noon to dodge DST shifts).
  */
 function offsetDate(base: string, days: number): string {
-	const d = new Date(base + "T12:00:00");
+	const d = new Date(`${base}T12:00:00`);
 	d.setDate(d.getDate() + days);
 	const yyyy = d.getFullYear();
 	const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -179,7 +179,6 @@ export default function HomeScreen() {
 			? (state.flower.imageSource as { uri: string }).uri
 			: null;
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: override updates when visible
 	useEffect(() => {
 		async function checkDevData() {
 			const over = await getRegionOverride();
@@ -408,7 +407,7 @@ export default function HomeScreen() {
 						<View style={styles.cardWrap}>
 							<View style={styles.glow} />
 							<FlipCard
-								key={state.flower.date + ":" + state.flower.state}
+								key={`${state.flower.date}:${state.flower.state}`}
 								style={{ width: cardW, height: cardH }}
 							>
 								{/* Front: image */}

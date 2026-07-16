@@ -58,7 +58,7 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
 			const vecVer = db.getFirstSync<{ version: string }>(
 				"SELECT vec_version() as version;",
 			);
-			if (vecVer && vecVer.version) {
+			if (vecVer?.version) {
 				console.log(
 					`[speciesDb] Native sqlite-vec detected (v${vecVer.version}). Enabling native vector search!`,
 				);

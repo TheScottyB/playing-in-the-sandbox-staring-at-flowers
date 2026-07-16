@@ -81,7 +81,7 @@ function runCommand(cmd) {
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "ignore"],
 		}).trim();
-	} catch (e) {
+	} catch (_e) {
 		return null;
 	}
 }

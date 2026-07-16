@@ -38,7 +38,7 @@ if (rowCountStr === null) {
 	process.exit(1);
 }
 const count = parseInt(rowCountStr, 10);
-if (isNaN(count) || count <= 0) {
+if (Number.isNaN(count) || count <= 0) {
 	console.error(`❌ Invalid species count: "${rowCountStr}"`);
 	process.exit(1);
 }
@@ -73,7 +73,7 @@ const embeddingSizeStr = runQuery(
 	"SELECT length(embedding) FROM species LIMIT 1;",
 );
 const embeddingSize = parseInt(embeddingSizeStr, 10);
-if (isNaN(embeddingSize) || embeddingSize !== 12288) {
+if (Number.isNaN(embeddingSize) || embeddingSize !== 12288) {
 	console.error(
 		`❌ Embedding blob size mismatch. Expected 12288 bytes (3072 float32), got: ${embeddingSizeStr} bytes`,
 	);

@@ -30,7 +30,7 @@ export default function ModernFlipCard({
 			damping: 14,
 			stiffness: 90,
 		});
-	}, [isFlipped]);
+	}, [isFlipped, rotate]);
 
 	const frontStyle = useAnimatedStyle(() => {
 		const isFrontFacing =

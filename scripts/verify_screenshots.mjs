@@ -92,7 +92,7 @@ function runCommand(cmd) {
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "ignore"],
 		}).trim();
-	} catch (e) {
+	} catch (_e) {
 		return null;
 	}
 }
@@ -221,7 +221,7 @@ Respond ONLY with a JSON object in this exact format:
 			let errorObj;
 			try {
 				errorObj = JSON.parse(errorText);
-			} catch (e) {}
+			} catch (_e) {}
 
 			const errorMessage = errorObj?.error?.message || errorText;
 			const isBillingOrQuota =
@@ -490,7 +490,7 @@ function fixScreenshot(analysis) {
 	return { fixed, actionsTaken };
 }
 
-function generateMarkdownReport(results, baseDir) {
+function generateMarkdownReport(results, _baseDir) {
 	let md = `# App Store Screenshot Quality Control Report\n\n`;
 	md += `*Generated on: ${new Date().toLocaleString()}*\n\n`;
 
@@ -632,15 +632,15 @@ async function main() {
 
 		if (res.issues.length > 0) {
 			console.log("  🔴 Issues:");
-			res.issues.forEach((iss) =>
-				console.log(`     - ${iss.replace(/\*\*/g, "")}`),
-			);
+			res.issues.forEach((iss) => {
+				console.log(`     - ${iss.replace(/\*\*/g, "")}`);
+			});
 		}
 		if (res.warnings.length > 0) {
 			console.log("  ⚠️ Warnings:");
-			res.warnings.forEach((warn) =>
-				console.log(`     - ${warn.replace(/\*\*/g, "")}`),
-			);
+			res.warnings.forEach((warn) => {
+				console.log(`     - ${warn.replace(/\*\*/g, "")}`);
+			});
 		}
 		if (res.issues.length === 0 && res.warnings.length === 0) {
 			console.log("  🟢 All checks passed.");

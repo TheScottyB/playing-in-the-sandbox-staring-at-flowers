@@ -27,8 +27,19 @@ const DEVICE_TYPES = {
 		filePrefix: "ipad129",
 		fastlaneKey: "APP_IPAD_PRO_3GEN_129",
 		scales: [
-			{ prefix: "ipad129_legacy", w: 2048, h: 2732, fastlaneKey: "APP_IPAD_PRO_129", copyOnly: true },
-			{ prefix: "ipad11", w: 1668, h: 2388, fastlaneKey: "APP_IPAD_PRO_3GEN_11" },
+			{
+				prefix: "ipad129_legacy",
+				w: 2048,
+				h: 2732,
+				fastlaneKey: "APP_IPAD_PRO_129",
+				copyOnly: true,
+			},
+			{
+				prefix: "ipad11",
+				w: 1668,
+				h: 2388,
+				fastlaneKey: "APP_IPAD_PRO_3GEN_11",
+			},
 			{ prefix: "ipad105", w: 1668, h: 2224, fastlaneKey: "APP_IPAD_105" },
 			{ prefix: "ipad97", w: 1536, h: 2048, fastlaneKey: "APP_IPAD_97" },
 		],
@@ -43,13 +54,17 @@ function runCommand(cmd) {
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "ignore"],
 		}).trim();
-	} catch (e) {
+	} catch (_e) {
 		return null;
 	}
 }
 
 function createDirectoryStructure(fastlaneKey) {
-	const baseDir = path.join(process.cwd(), "store/apple/screenshot/en-US", fastlaneKey);
+	const baseDir = path.join(
+		process.cwd(),
+		"store/apple/screenshot/en-US",
+		fastlaneKey,
+	);
 	if (!fs.existsSync(baseDir)) {
 		fs.mkdirSync(baseDir, { recursive: true });
 	}
@@ -169,8 +184,8 @@ async function eraseGearIcon(filePath, filePrefix) {
 	if (!fs.existsSync(filePath) || !filePrefix) return;
 	try {
 		const image = await Jimp.read(filePath);
-		const w = image.bitmap.width;
-		const h = image.bitmap.height;
+		const _w = image.bitmap.width;
+		const _h = image.bitmap.height;
 
 		let rect = null;
 		if (filePrefix.startsWith("iphone67")) {
@@ -186,7 +201,7 @@ async function eraseGearIcon(filePath, filePrefix) {
 				`     Erasing floating gear overlay from ${path.basename(filePath)}...`,
 			);
 			// Paint #0a0a0a (hex 10, 10, 10) matching the top header's background color
-			image.scan(rect.x, rect.y, rect.w, rect.h, function (x, y, idx) {
+			image.scan(rect.x, rect.y, rect.w, rect.h, function (_x, _y, idx) {
 				this.bitmap.data[idx] = 10; // R
 				this.bitmap.data[idx + 1] = 10; // G
 				this.bitmap.data[idx + 2] = 10; // B
@@ -272,11 +287,11 @@ async function main() {
 		}
 
 		console.log(`Post-processing screenshots for ${deviceInfo.name}...`);
-		
+
 		// Setup maestro output dir (temporary flat dir)
 		const tempDir = path.join(process.cwd(), "app_store_assets/screenshots");
 		if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-		
+
 		const mainDir = createDirectoryStructure(deviceInfo.fastlaneKey);
 
 		for (const suffix of SCREENSHOT_SCENES) {
@@ -291,18 +306,23 @@ async function main() {
 
 			// Clean up base image
 			await postProcessScreenshot(sourcePath, deviceInfo.filePrefix);
-			
+
 			// Move base image to main fastlane dir
-			const mainDestPath = path.join(mainDir, `${deviceInfo.filePrefix}${suffix}.png`);
+			const mainDestPath = path.join(
+				mainDir,
+				`${deviceInfo.filePrefix}${suffix}.png`,
+			);
 			fs.copyFileSync(sourcePath, mainDestPath);
 
 			// Generate and clean up scaled copies
 			for (const scale of deviceInfo.scales) {
 				const scaleDir = createDirectoryStructure(scale.fastlaneKey);
 				const destPath = path.join(scaleDir, `${scale.prefix}${suffix}.png`);
-				
+
 				if (scale.copyOnly) {
-					console.log(`  Copying legacy format to ${scale.prefix}${suffix}.png...`);
+					console.log(
+						`  Copying legacy format to ${scale.prefix}${suffix}.png...`,
+					);
 					fs.copyFileSync(sourcePath, destPath);
 				} else {
 					console.log(

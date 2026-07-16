@@ -139,7 +139,7 @@ async function fetchEmbedding(apiKey, text) {
 			let errorObj;
 			try {
 				errorObj = JSON.parse(textErr);
-			} catch (e) {}
+			} catch (_e) {}
 
 			const errorMessage = errorObj?.error?.message || textErr;
 			const isBillingOrQuota =

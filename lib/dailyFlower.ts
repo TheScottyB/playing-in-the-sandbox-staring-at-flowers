@@ -63,8 +63,8 @@ export function imageUrlFor(
 	date: string = todayLocalIso(),
 ): string {
 	try {
-		const today = new Date(todayLocalIso() + "T12:00:00");
-		const target = new Date(date + "T12:00:00");
+		const today = new Date(`${todayLocalIso()}T12:00:00`);
+		const target = new Date(`${date}T12:00:00`);
 		const diffTime = today.getTime() - target.getTime();
 		const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 

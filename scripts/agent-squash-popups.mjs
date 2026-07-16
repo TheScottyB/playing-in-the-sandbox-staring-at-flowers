@@ -61,7 +61,7 @@ Do NOT include any markdown formatting or backticks. Return raw JSON.`,
 		let errorObj;
 		try {
 			errorObj = JSON.parse(text);
-		} catch (e) {}
+		} catch (_e) {}
 
 		const errorMessage = errorObj?.error?.message || text;
 		const isBillingOrQuota =
@@ -102,7 +102,7 @@ async function main() {
 			execSync(`xcrun simctl io booted screenshot ${screenshotPath}`, {
 				stdio: "ignore",
 			});
-		} catch (e) {
+		} catch (_e) {
 			console.error("Failed to take screenshot. Is the simulator booted?");
 			process.exit(1);
 		}
