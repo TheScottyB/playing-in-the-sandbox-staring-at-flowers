@@ -34,32 +34,45 @@ export default function PremiumModal({
 	const [offerings, setOfferings] = useState<PurchasesOffering[]>([]);
 	const [selectedPackageId, setSelectedPackageId] = useState<string>("");
 	const [loadingOfferings, setLoadingOfferings] = useState(true);
+	const [offeringsError, setOfferingsError] = useState(false);
 
+	async function loadOfferings() {
+		setLoadingOfferings(true);
+		setOfferingsError(false);
+		try {
+			const pkgs = await getSubscriptionOfferings();
+			setOfferings(pkgs);
+			if (pkgs.length > 0) {
+				// Default to premium_monthly or the first package
+				const defaultPkg =
+					pkgs.find((p) => p.identifier === "premium_monthly") || pkgs[0];
+				setSelectedPackageId(defaultPkg.identifier);
+			} else {
+				setOfferingsError(true);
+			}
+		} catch (e) {
+			console.error("Failed to load offerings:", e);
+			setOfferingsError(true);
+		} finally {
+			setLoadingOfferings(false);
+		}
+	}
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the modal opens
 	useEffect(() => {
 		if (visible) {
-			async function loadOfferings() {
-				setLoadingOfferings(true);
-				try {
-					const pkgs = await getSubscriptionOfferings();
-					setOfferings(pkgs);
-					if (pkgs.length > 0) {
-						// Default to premium_monthly or the first package
-						const defaultPkg =
-							pkgs.find((p) => p.identifier === "premium_monthly") || pkgs[0];
-						setSelectedPackageId(defaultPkg.identifier);
-					}
-				} catch (e) {
-					console.error("Failed to load offerings:", e);
-				} finally {
-					setLoadingOfferings(false);
-				}
-			}
 			loadOfferings();
 		}
 	}, [visible]);
 
 	async function handlePurchase() {
-		if (!selectedPackageId) return;
+		if (!selectedPackageId) {
+			Alert.alert(
+				"Subscription Unavailable",
+				"We couldn't load the subscription options. Please check your connection and tap Retry.",
+			);
+			return;
+		}
 		setPurchasing(true);
 		try {
 			const success = await purchasePackage(selectedPackageId);
@@ -187,6 +200,16 @@ export default function PremiumModal({
 								color={PALETTE.accent}
 								style={{ marginVertical: 20 }}
 							/>
+						) : offeringsError || offerings.length === 0 ? (
+							<View style={styles.offeringsErrorBox}>
+								<Text style={styles.offeringsErrorText}>
+									We couldn't load the subscription options right now. Please
+									check your connection and try again.
+								</Text>
+								<Pressable style={styles.retryBtn} onPress={loadOfferings}>
+									<Text style={styles.retryBtnText}>Retry</Text>
+								</Pressable>
+							</View>
 						) : (
 							offerings.map((pkg) => {
 								const isSelected = selectedPackageId === pkg.identifier;
@@ -234,7 +257,8 @@ export default function PremiumModal({
 					<Pressable
 						style={[
 							styles.primaryBtn,
-							(purchasing || loadingOfferings) && styles.disabledBtn,
+							(purchasing || loadingOfferings || !selectedPackageId) &&
+								styles.disabledBtn,
 						]}
 						onPress={handlePurchase}
 						disabled={purchasing || loadingOfferings}
@@ -433,6 +457,29 @@ const styles = StyleSheet.create({
 	},
 	disabledBtn: {
 		opacity: 0.5,
+	},
+	offeringsErrorBox: {
+		alignItems: "center",
+		paddingVertical: 16,
+		gap: 12,
+	},
+	offeringsErrorText: {
+		color: "rgba(255, 255, 255, 0.7)",
+		fontSize: 13,
+		lineHeight: 19,
+		textAlign: "center",
+	},
+	retryBtn: {
+		borderWidth: 1,
+		borderColor: "rgba(242, 184, 218, 0.4)",
+		borderRadius: 10,
+		paddingHorizontal: 22,
+		paddingVertical: 8,
+	},
+	retryBtnText: {
+		color: PALETTE.accent,
+		fontSize: 14,
+		fontWeight: "600",
 	},
 	gradientBtn: {
 		flex: 1,
