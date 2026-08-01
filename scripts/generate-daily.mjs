@@ -44,10 +44,8 @@ const IMG_EXT = "png"; // Daily images are generated as high-res PNGs
 const SPECIES_PATH = join(ROOT, "lib", "data", "species.json");
 
 const GEMINI_MODELS = [
-	"gemini-3-pro-image",
-	"gemini-3.1-flash-lite-image",
 	"gemini-3.1-flash-image",
-	"gemini-2.5-flash-image-preview",
+	"gemini-3.1-flash-lite-image",
 ];
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
