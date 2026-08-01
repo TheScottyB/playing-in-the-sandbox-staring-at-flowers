@@ -69,12 +69,18 @@ jobs:
           if [ "$INPUT_MISSING_ONLY" = "true" ]; then
             ARGS="$ARGS --missing-only"
           fi
-          node scripts/generate-daily.mjs $ARGS 2>&1 | tee generate.log
+          set -o pipefail
+          GEN_STATUS=0
+          node scripts/generate-daily.mjs $ARGS 2>&1 | tee generate.log || GEN_STATUS=$?
           echo "log<<GENEOF" >> "$GITHUB_OUTPUT"
           tail -5 generate.log >> "$GITHUB_OUTPUT"
           echo "GENEOF" >> "$GITHUB_OUTPUT"
+          exit $GEN_STATUS
 
       - name: Commit and push
+        # Run even when generation failed so partial results still land;
+        # a red run with some states committed beats losing them.
+        if: always() && steps.gen.outcome != 'skipped'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

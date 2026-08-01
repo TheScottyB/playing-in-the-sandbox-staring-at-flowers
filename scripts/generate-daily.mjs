@@ -470,6 +470,10 @@ async function run() {
 			`Re-run with: --states ${failedStates.join(",")} --missing-only`,
 		);
 	}
+
+	if (!dryRun && fail > 0) {
+		process.exitCode = 1;
+	}
 }
 
 const WAREHOUSE_DIR = "/Users/scottybe/workspace/shared/design-assets/daily";
