@@ -38,8 +38,8 @@ const MOCK_OFFERINGS: PurchasesOffering[] = [
 		title: "Founders Edition (Lifetime VIP)",
 		description:
 			"Limited time offer. Support development and get permanent premium access forever.",
-		priceString: "$599.99",
-		price: 599.99,
+		priceString: "$99.99",
+		price: 99.99,
 	},
 ];
 
