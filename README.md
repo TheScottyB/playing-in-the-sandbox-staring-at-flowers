@@ -31,7 +31,7 @@ Every night at **04:00 PT**, a GitHub Actions cron workflow executes:
 ### 3. Pre-Compiled Vector Search & Offline Database
 To support a completely offline experience and robust exploration, the app includes a pre-compiled SQLite database ([assets/species.db](file:///Users/scottybe/workspace/playing-in-the-sandbox-looking-at-flowers/assets/species.db)):
 * **Build-time compilation:** Generated using [compile_species_db.mjs](file:///Users/scottybe/workspace/playing-in-the-sandbox-looking-at-flowers/scripts/compile_species_db.mjs) calling the Gemini Embeddings API (`gemini-embedding-001`) to output 768-dimension vectors for all species descriptions.
-* **Hybrid Search Engine:** Reads the database using `expo-sqlite`. On native builds, it utilizes native `sqlite-vec` (JSI virtual table matches). In **Expo Go** or sandbox environments where custom native bindings are locked out, it automatically falls back to an ultra-fast JavaScript dot-product scan (completing in **< 1.5ms** for 150+ species).
+* **Hybrid Search Engine:** Reads the database using `expo-sqlite`. On native builds, it utilizes native `sqlite-vec` (JSI virtual table matches). In sandbox environments where custom native bindings are locked out, it automatically falls back to an ultra-fast JavaScript dot-product scan (completing in **< 1.5ms** for 150+ species).
 
 ---
 
@@ -75,11 +75,11 @@ The project is built on **Expo SDK 56** and **React Native 0.85.3**. Package man
 # Install dependencies
 pnpm install
 
-# Start the Expo Go development server
+# Start the development server
 pnpm exec expo start
 ```
 
-Scan the generated QR code using **Expo Go** on iOS or Android. Because the database uses a JS fallback when native `sqlite-vec` is unavailable, you do not need custom native clients for daily development.
+*Note: Expo SDK 56 and above are not compatible with Expo Go.* To run the app on a device or simulator, you must compile a custom development build using the commands below.
 
 ### Native Pre-Release Builds
 To verify native behaviors (such as background loading or App Store compliance) compile a local development build:
