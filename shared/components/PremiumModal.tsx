@@ -43,9 +43,12 @@ export default function PremiumModal({
 			const pkgs = await getSubscriptionOfferings();
 			setOfferings(pkgs);
 			if (pkgs.length > 0) {
-				// Default to premium_monthly or the first package
+				// Default to the monthly plan, else the first package. Match on
+				// packageType, not identifier: identifiers come from two namespaces
+				// ("premium_monthly" in mock mode vs "$rc_monthly" from RevenueCat in
+				// production), so an identifier match would only ever hit in mock mode.
 				const defaultPkg =
-					pkgs.find((p) => p.identifier === "premium_monthly") || pkgs[0];
+					pkgs.find((p) => p.packageType === "MONTHLY") || pkgs[0];
 				setSelectedPackageId(defaultPkg.identifier);
 			} else {
 				setOfferingsError(true);

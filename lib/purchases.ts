@@ -8,19 +8,51 @@ const USE_MOCK =
 	process.env.EXPO_PUBLIC_USE_MOCK_PURCHASES === "true" ||
 	Platform.OS === "web";
 
-// Unified Subscription Pass offerings interface
+// Which plan a package represents, normalized so mock and production agree.
+// Mirrors the RevenueCat PACKAGE_TYPE values this app uses, plus a catch-all.
+export type PackageType = "MONTHLY" | "ANNUAL" | "LIFETIME" | "UNKNOWN";
+
+// Unified Subscription Pass offerings interface.
+//
+// NOTE: `identifier` lives in one of two namespaces depending on the mode:
+//   - mock mode uses our own ids ("premium_monthly", "premium_yearly", ...)
+//   - production returns RevenueCat package ids, which for this app's "default"
+//     offering are "$rc_monthly", "$rc_yearly", "$rc_lifetime"
+// It is only a round-trip key back into purchasePackage(), so it stays in
+// whichever namespace it arrived in. Anything that needs to know *which plan* a
+// package is must use `packageType`, which is identical in both modes.
 export interface PurchasesOffering {
 	identifier: string;
+	packageType: PackageType;
 	title: string;
 	description: string;
 	priceString: string;
 	price: number;
 }
 
+// Maps identifiers from both namespaces onto a plan, used as a fallback when
+// RevenueCat doesn't hand us a packageType we recognize.
+const IDENTIFIER_PACKAGE_TYPES: Record<string, PackageType> = {
+	$rc_monthly: "MONTHLY",
+	$rc_yearly: "ANNUAL",
+	$rc_lifetime: "LIFETIME",
+	premium_monthly: "MONTHLY",
+	premium_yearly: "ANNUAL",
+	premium_founders: "LIFETIME",
+};
+
+function resolvePackageType(rawType: unknown, identifier: string): PackageType {
+	if (rawType === "MONTHLY" || rawType === "ANNUAL" || rawType === "LIFETIME") {
+		return rawType;
+	}
+	return IDENTIFIER_PACKAGE_TYPES[identifier] ?? "UNKNOWN";
+}
+
 // Internal mock package configuration
 const MOCK_OFFERINGS: PurchasesOffering[] = [
 	{
 		identifier: "premium_monthly",
+		packageType: "MONTHLY",
 		title: "Premium Monthly Pass",
 		description: "Unlimited searches, 7-day archive, and Travel Mode monthly.",
 		priceString: "$4.99",
@@ -28,6 +60,7 @@ const MOCK_OFFERINGS: PurchasesOffering[] = [
 	},
 	{
 		identifier: "premium_yearly",
+		packageType: "ANNUAL",
 		title: "Premium Annual Pass",
 		description: "Best value! Save over 50% compared to the monthly plan.",
 		priceString: "$29.99",
@@ -35,6 +68,7 @@ const MOCK_OFFERINGS: PurchasesOffering[] = [
 	},
 	{
 		identifier: "premium_founders",
+		packageType: "LIFETIME",
 		title: "Founders Edition (Lifetime VIP)",
 		description:
 			"Limited time offer. Support development and get permanent premium access forever.",
@@ -108,6 +142,7 @@ export async function getSubscriptionOfferings(): Promise<PurchasesOffering[]> {
 			// biome-ignore lint/suspicious/noExplicitAny: package properties parsed dynamically
 			return offerings.current.availablePackages.map((pkg: any) => ({
 				identifier: pkg.identifier,
+				packageType: resolvePackageType(pkg.packageType, pkg.identifier),
 				title: pkg.product.title,
 				description: pkg.product.description,
 				priceString: pkg.product.priceString,
