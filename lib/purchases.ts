@@ -18,6 +18,9 @@ export type PackageType = "MONTHLY" | "ANNUAL" | "LIFETIME" | "UNKNOWN";
 //   - mock mode uses our own ids ("premium_monthly", "premium_yearly", ...)
 //   - production returns RevenueCat package ids, which for this app's "default"
 //     offering are "$rc_monthly", "$rc_yearly", "$rc_lifetime"
+//     (in App Store Connect, RevenueCat "$rc_yearly" maps to ASC product
+//     "com.djscottyb.playinginthesandoxlookingatflowers.premium_annual",
+//     overridable via `ASC_ANNUAL_PRODUCT_ID`)
 // It is only a round-trip key back into purchasePackage(), so it stays in
 // whichever namespace it arrived in. Anything that needs to know *which plan* a
 // package is must use `packageType`, which is identical in both modes.
@@ -38,6 +41,7 @@ const IDENTIFIER_PACKAGE_TYPES: Record<string, PackageType> = {
 	$rc_lifetime: "LIFETIME",
 	premium_monthly: "MONTHLY",
 	premium_yearly: "ANNUAL",
+	premium_annual: "ANNUAL",
 	premium_founders: "LIFETIME",
 };
 
@@ -93,34 +97,116 @@ if (!USE_MOCK) {
 	}
 }
 
+let initPromise: Promise<void> | null = null;
+let isConfigured = false;
+const mockListeners = new Set<(isPremium: boolean) => void>();
+
+// biome-ignore lint/suspicious/noExplicitAny: dynamically parsed RevenueCat CustomerInfo
+function hasActivePremiumEntitlement(customerInfo: any): boolean {
+	const active = customerInfo?.entitlements?.active;
+	if (!active) return false;
+	return active.premium !== undefined || active.premium_pass !== undefined;
+}
+
+function notifyMockListeners(isPremium: boolean): void {
+	for (const listener of mockListeners) {
+		try {
+			listener(isPremium);
+		} catch (e) {
+			console.error("[Purchases Wrapper] Listener error:", e);
+		}
+	}
+}
+
 /**
  * Initializes the Purchases SDK if mock mode is disabled.
+ * Safe to call multiple times or concurrently; returns the singleton init promise.
  */
-export async function initPurchases(): Promise<void> {
-	if (USE_MOCK || !Purchases) {
-		console.log("[Purchases Wrapper] Running in MOCK Mode (or Web)");
-		return;
-	}
+export function initPurchases(): Promise<void> {
+	if (initPromise) return initPromise;
 
-	try {
-		const apiKey = Platform.select({
-			ios: process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY,
-			android: process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY,
-			default: "",
-		});
+	let currentPromise: Promise<void> | null = null;
+	currentPromise = (async () => {
+		// Defer past the synchronous `initPromise = currentPromise` assignment so
+		// a synchronous throw in Purchases.configure() cannot clear `initPromise`
+		// before the outer assignment completes.
+		await Promise.resolve();
 
-		if (!apiKey) {
-			console.warn(
-				"[Purchases Wrapper] RevenueCat API Key is missing. Check your environment variables.",
-			);
+		if (USE_MOCK || !Purchases) {
+			console.log("[Purchases Wrapper] Running in MOCK Mode (or Web)");
 			return;
 		}
 
-		await Purchases.configure({ apiKey });
-		console.log("[Purchases Wrapper] RevenueCat configured successfully.");
-	} catch (e) {
-		console.error("[Purchases Wrapper] Failed to initialize RevenueCat:", e);
+		try {
+			const apiKey = Platform.select({
+				ios: process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY,
+				android: process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY,
+				default: "",
+			});
+
+			if (!apiKey) {
+				console.warn(
+					"[Purchases Wrapper] RevenueCat API Key is missing. Check your environment variables.",
+				);
+				return;
+			}
+
+			await Purchases.configure({ apiKey });
+			isConfigured = true;
+			console.log("[Purchases Wrapper] RevenueCat configured successfully.");
+		} catch (e) {
+			console.error("[Purchases Wrapper] Failed to initialize RevenueCat:", e);
+			isConfigured = false;
+			if (initPromise === currentPromise) {
+				initPromise = null;
+			}
+		}
+	})();
+
+	initPromise = currentPromise;
+	return currentPromise;
+}
+
+async function ensureInitialized(): Promise<void> {
+	await initPurchases();
+}
+
+/**
+ * Subscribes to live premium entitlement updates (RevenueCat CustomerInfo updates
+ * in native mode, or mock purchase/restore updates in mock mode).
+ */
+export function subscribeToPremiumUpdates(
+	listener: (isPremium: boolean) => void,
+): () => void {
+	if (USE_MOCK || !Purchases) {
+		mockListeners.add(listener);
+		return () => {
+			mockListeners.delete(listener);
+		};
 	}
+
+	let active = true;
+	// biome-ignore lint/suspicious/noExplicitAny: RevenueCat CustomerInfo payload
+	const rcListener = (customerInfo: any) => {
+		if (!active) return;
+		try {
+			listener(hasActivePremiumEntitlement(customerInfo));
+		} catch (e) {
+			console.error("[Purchases Wrapper] Listener error:", e);
+		}
+	};
+
+	if (typeof Purchases.addCustomerInfoUpdateListener === "function") {
+		Purchases.addCustomerInfoUpdateListener(rcListener);
+	}
+	void ensureInitialized();
+
+	return () => {
+		active = false;
+		if (typeof Purchases.removeCustomerInfoUpdateListener === "function") {
+			Purchases.removeCustomerInfoUpdateListener(rcListener);
+		}
+	};
 }
 
 /**
@@ -131,6 +217,11 @@ export async function getSubscriptionOfferings(): Promise<PurchasesOffering[]> {
 		// Simulate brief network delay
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		return MOCK_OFFERINGS;
+	}
+
+	await ensureInitialized();
+	if (!isConfigured) {
+		return [];
 	}
 
 	try {
@@ -169,11 +260,17 @@ export async function purchasePackage(packageId: string): Promise<boolean> {
 		await new Promise((resolve) => setTimeout(resolve, 1500));
 		try {
 			await AsyncStorage.setItem(MOCK_PREMIUM_KEY, "true");
+			notifyMockListeners(true);
 			return true;
 		} catch (e) {
 			console.error("Failed to write mock premium status:", e);
 			return false;
 		}
+	}
+
+	await ensureInitialized();
+	if (!isConfigured) {
+		throw new Error("Purchases SDK is not configured");
 	}
 
 	try {
@@ -192,11 +289,7 @@ export async function purchasePackage(packageId: string): Promise<boolean> {
 		}
 
 		const { customerInfo } = await Purchases.purchasePackage(pkg);
-		const entitlements = customerInfo.entitlements.active;
-		return (
-			entitlements.premium !== undefined ||
-			entitlements.premium_pass !== undefined
-		);
+		return hasActivePremiumEntitlement(customerInfo);
 		// biome-ignore lint/suspicious/noExplicitAny: error types are caught as any
 	} catch (e: any) {
 		if (e.userCancelled) {
@@ -216,19 +309,62 @@ export async function restorePurchases(): Promise<boolean> {
 		console.log("[Purchases Wrapper] Simulating purchase restoration...");
 		await new Promise((resolve) => setTimeout(resolve, 1000));
 		const val = await AsyncStorage.getItem(MOCK_PREMIUM_KEY);
-		return val === "true";
+		const restored = val === "true";
+		if (restored) {
+			notifyMockListeners(true);
+		}
+		return restored;
+	}
+
+	await ensureInitialized();
+	if (!isConfigured) {
+		throw new Error("Purchases SDK is not configured");
 	}
 
 	try {
 		const customerInfo = await Purchases.restorePurchases();
-		const entitlements = customerInfo.entitlements.active;
-		return (
-			entitlements.premium !== undefined ||
-			entitlements.premium_pass !== undefined
-		);
+		return hasActivePremiumEntitlement(customerInfo);
 	} catch (e) {
 		console.error("[Purchases Wrapper] Restore failed:", e);
 		throw e;
+	}
+}
+
+export interface PremiumStatusVerification {
+	isPremium: boolean;
+	verified: boolean;
+}
+
+/**
+ * Query customer info and indicate whether the result was verified by the
+ * backing store (mock AsyncStorage or RevenueCat CustomerInfo) vs. inferred from
+ * an unconfigured SDK or transient error.
+ */
+export async function checkPremiumStatusWithVerification(): Promise<PremiumStatusVerification> {
+	if (USE_MOCK || !Purchases) {
+		try {
+			const value = await AsyncStorage.getItem(MOCK_PREMIUM_KEY);
+			return { isPremium: value === "true", verified: true };
+		} catch (e) {
+			console.error("Failed to load mock premium status:", e);
+			return { isPremium: false, verified: false };
+		}
+	}
+
+	await ensureInitialized();
+	if (!isConfigured) {
+		return { isPremium: false, verified: false };
+	}
+
+	try {
+		const customerInfo = await Purchases.getCustomerInfo();
+		return {
+			isPremium: hasActivePremiumEntitlement(customerInfo),
+			verified: true,
+		};
+	} catch (e) {
+		console.error("[Purchases Wrapper] Failed to check premium status:", e);
+		return { isPremium: false, verified: false };
 	}
 }
 
@@ -236,25 +372,6 @@ export async function restorePurchases(): Promise<boolean> {
  * Query customer info to see if the user is premium.
  */
 export async function checkPremiumStatus(): Promise<boolean> {
-	if (USE_MOCK || !Purchases) {
-		try {
-			const value = await AsyncStorage.getItem(MOCK_PREMIUM_KEY);
-			return value === "true";
-		} catch (e) {
-			console.error("Failed to load mock premium status:", e);
-			return false;
-		}
-	}
-
-	try {
-		const customerInfo = await Purchases.getCustomerInfo();
-		const entitlements = customerInfo.entitlements.active;
-		return (
-			entitlements.premium !== undefined ||
-			entitlements.premium_pass !== undefined
-		);
-	} catch (e) {
-		console.error("[Purchases Wrapper] Failed to check premium status:", e);
-		return false;
-	}
+	const { isPremium } = await checkPremiumStatusWithVerification();
+	return isPremium;
 }

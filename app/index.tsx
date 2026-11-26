@@ -4,10 +4,11 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Link, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as Updates from "expo-updates";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
 	ActivityIndicator,
 	Alert,
+	AppState,
 	Linking,
 	Modal,
 	Pressable,
@@ -21,12 +22,17 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { IridescentOverlay } from "@/components/IridescentOverlay";
 import FlipCard from "@/components/ModernFlipCard";
+import { DEFAULT_FLOWER } from "@/data/defaults";
 import { useOnline } from "@/hooks/useOnline";
 
 import {
+	alternateImageUrlFor,
+	archivePhotoForLatin,
 	type DailyFlower,
 	FlowerFetchError,
+	fetchArchiveFlower,
 	fetchDailyFlower,
+	formatBloomMonths,
 	getCachedFlower,
 	getDefaultFlower,
 	todayLocalIso,
@@ -35,8 +41,9 @@ import {
 	FREE_SEARCH_LIMIT,
 	getSearchQuotaRemaining,
 	incrementSearchQuotaUsed,
-	isPremiumUser,
+	isPremiumUserWithVerification,
 } from "@/lib/premium";
+import { subscribeToPremiumUpdates } from "@/lib/purchases";
 import {
 	getRegion,
 	getRegionOverride,
@@ -47,10 +54,13 @@ import {
 import {
 	getDailyFlowerOffline,
 	getSpeciesCount,
+	isSearchQueryEligible,
+	MAX_QUERY_CHARS,
 	type SpeciesRecord,
 	searchSpeciesVector,
 } from "@/lib/speciesDb";
 import PremiumModal from "@/shared/components/PremiumModal";
+import { PALETTE, TYPE } from "@/shared/constants/brand";
 import { styles } from "@/styles/home.styles";
 
 type ErrorKind = "unpublished" | "service" | "network";
@@ -109,6 +119,78 @@ function formatDateLabel(iso: string): string {
 	return `${MONTH_SHORT[m - 1]} ${d} ${y}`;
 }
 
+function offlineSpeciesToDailyFlower(
+	dbFlower: SpeciesRecord,
+	date: string,
+): DailyFlower {
+	const isCaliforniaPoppy =
+		dbFlower.latin === DEFAULT_FLOWER.latin ||
+		dbFlower.common === DEFAULT_FLOWER.common;
+	if (isCaliforniaPoppy) {
+		const fallback = getDefaultFlower(date);
+		return {
+			imageSource: fallback.imageSource,
+			common: dbFlower.common,
+			latin: dbFlower.latin,
+			blurb: dbFlower.blurb || fallback.blurb,
+			state: dbFlower.region,
+			date,
+			isDefault: true,
+			isPlaceholder: false,
+			bloomMonths: dbFlower.bloomMonths,
+			timeOfDay: fallback.timeOfDay,
+		};
+	}
+	return {
+		imageSource: null,
+		common: dbFlower.common,
+		latin: dbFlower.latin,
+		blurb: dbFlower.blurb,
+		state: dbFlower.region,
+		date,
+		isDefault: true,
+		isPlaceholder: true,
+		bloomMonths: dbFlower.bloomMonths,
+	};
+}
+
+async function resolveOfflineFallbackFlower(
+	region: string,
+	date: string,
+	includeCached: boolean,
+): Promise<DailyFlower> {
+	if (includeCached) {
+		const cached = await getCachedFlower(region);
+		if (cached && cached.state === region && cached.date === date) {
+			return { ...cached, isDefault: true };
+		}
+	}
+	// A real photograph from the published archive beats a text-only card.
+	const archived = await fetchArchiveFlower(region, date);
+	if (archived) return archived;
+	const dbFlower =
+		(await getDailyFlowerOffline(region, date)) ??
+		(region !== "default"
+			? await getDailyFlowerOffline("default", date)
+			: null);
+	if (dbFlower) {
+		return offlineSpeciesToDailyFlower(dbFlower, date);
+	}
+	return { ...getDefaultFlower(date), isDefault: true };
+}
+
+const SEARCH_SUGGESTIONS = [
+	"poppy",
+	"sunflower",
+	"lupine",
+	"orchid",
+	"lily",
+	"violet",
+	"cactus",
+	"yellow autumn",
+];
+const SPECIES_TOTAL_LABEL = "396";
+
 export default function HomeScreen() {
 	const [state, setState] = useState<State>({ status: "loading" });
 	const [dayOffset, setDayOffset] = useState(0);
@@ -123,33 +205,111 @@ export default function HomeScreen() {
 	const [isPremium, setIsPremium] = useState(false);
 	const [searchQuota, setSearchQuota] = useState(FREE_SEARCH_LIMIT);
 	const [premiumModalVisible, setPremiumModalVisible] = useState(false);
+	const [fallbackImageUri, setFallbackImageUri] = useState<string | null>(null);
+	const [imageLoadFailed, setImageLoadFailed] = useState(false);
+	const loadedDateRef = useRef<string>(todayLocalIso());
+	const dayOffsetRef = useRef<number>(dayOffset);
+	dayOffsetRef.current = dayOffset;
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey trigger
 	useEffect(() => {
+		let cancelled = false;
 		async function loadPremiumData() {
-			const prem = await isPremiumUser();
+			const { isPremium: prem, verified } =
+				await isPremiumUserWithVerification();
+			if (cancelled) return;
 			setIsPremium(prem);
+			if (!__DEV__ && verified && !prem) {
+				setDevMenuVisible(false);
+				const existingOverride = await getRegionOverride();
+				if (cancelled) return;
+				if (existingOverride !== null) {
+					await setRegionOverride(null);
+					if (cancelled) return;
+					setActiveOverride(null);
+					setReloadKey((k) => k + 1);
+				}
+			}
 			const quota = await getSearchQuotaRemaining();
-			setSearchQuota(quota);
+			if (!cancelled) setSearchQuota(quota);
 		}
-		loadPremiumData();
+		void loadPremiumData();
+
+		const sub = AppState.addEventListener("change", (nextState) => {
+			if (nextState === "active") {
+				void loadPremiumData();
+				if (
+					dayOffsetRef.current === 0 &&
+					todayLocalIso() !== loadedDateRef.current
+				) {
+					setReloadKey((k) => k + 1);
+				}
+			}
+		});
+		return () => {
+			cancelled = true;
+			sub.remove();
+		};
 	}, [reloadKey]);
+
+	useEffect(() => {
+		let cancelled = false;
+		const unsubscribe = subscribeToPremiumUpdates((prem) => {
+			if (cancelled) return;
+			setIsPremium(prem);
+			if (!__DEV__ && !prem) {
+				setDevMenuVisible(false);
+				void (async () => {
+					const existingOverride = await getRegionOverride();
+					if (cancelled || existingOverride === null) return;
+					await setRegionOverride(null);
+					if (cancelled) return;
+					setActiveOverride(null);
+					setReloadKey((k) => k + 1);
+				})();
+			}
+		});
+		return () => {
+			cancelled = true;
+			unsubscribe();
+		};
+	}, []);
 
 	const [searchVisible, setSearchVisible] = useState(false);
 	const [searchQuery, setSearchQuery] = useState("");
 	const [searchResults, setSearchResults] = useState<SpeciesRecord[]>([]);
 	const [searching, setSearching] = useState(false);
+	const [searchHint, setSearchHint] = useState<string | null>(null);
+	const searchingRef = useRef(false);
 	const router = useRouter();
 
-	async function handleSearch() {
-		if (!searchQuery.trim()) return;
-		if (searchQuota <= 0 && !isPremium) {
-			setPremiumModalVisible(true);
+	async function handleSearch(overrideQuery?: string) {
+		if (searchingRef.current) return;
+		const trimmed = (overrideQuery ?? searchQuery)
+			.trim()
+			.slice(0, MAX_QUERY_CHARS);
+		if (!isSearchQueryEligible(trimmed)) {
+			setSearchResults([]);
+			setSearchHint(
+				"Enter at least 2 characters with a flower name, color, season, or region.",
+			);
 			return;
 		}
+		setSearchHint(null);
+		searchingRef.current = true;
 		setSearching(true);
 		try {
-			const results = await searchSpeciesVector(searchQuery.trim());
+			if (!isPremium) {
+				const currentQuota = await getSearchQuotaRemaining();
+				setSearchQuota(currentQuota);
+				if (currentQuota <= 0) {
+					setSearchVisible(false);
+					setSearchResults([]);
+					setPremiumModalVisible(true);
+					return;
+				}
+			}
+			const results = await searchSpeciesVector(trimmed);
 			setSearchResults(results);
 			if (!isPremium) {
 				const remaining = await incrementSearchQuotaUsed();
@@ -159,6 +319,7 @@ export default function HomeScreen() {
 			console.error("Search failed:", e);
 			Alert.alert("Search Error", "Unable to complete search.");
 		} finally {
+			searchingRef.current = false;
 			setSearching(false);
 		}
 	}
@@ -171,27 +332,66 @@ export default function HomeScreen() {
 
 	// Extract a plain URI string from imageSource (only set for CDN flowers,
 	// not for bundled require() fallbacks — those can't be serialised as a param).
-	const detailImageUri =
+	const extractedImageUri =
 		state.status === "ok" &&
 		state.flower.imageSource != null &&
 		typeof state.flower.imageSource === "object" &&
 		"uri" in (state.flower.imageSource as Record<string, unknown>)
 			? (state.flower.imageSource as { uri: string }).uri
 			: null;
+	const detailImageUri = fallbackImageUri ?? extractedImageUri;
+	const activeImageSource = fallbackImageUri
+		? { uri: fallbackImageUri }
+		: state.status === "ok"
+			? (state.flower.imageSource ?? null)
+			: null;
 
+	const flowerIdentity =
+		state.status === "ok"
+			? `${state.flower.state}:${state.flower.date}:${state.flower.common}:${extractedImageUri ?? ""}:${Boolean(state.flower.isDefault)}`
+			: "";
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset image error state when active flower changes
 	useEffect(() => {
-		async function checkDevData() {
-			const over = await getRegionOverride();
-			setActiveOverride(over);
-			if (devMenuVisible) {
-				const count = await getSpeciesCount();
-				setDbCount(count);
+		setFallbackImageUri(null);
+		setImageLoadFailed(false);
+	}, [flowerIdentity]);
+
+	function handleCardImageError() {
+		const currentUri = detailImageUri;
+		if (currentUri && !fallbackImageUri) {
+			const alt = alternateImageUrlFor(currentUri);
+			if (alt) {
+				setFallbackImageUri(alt);
+				return;
 			}
 		}
-		checkDevData();
-	}, [devMenuVisible]);
+		setImageLoadFailed(true);
+	}
+
+	useEffect(() => {
+		let cancelled = false;
+		async function checkDevData() {
+			const over = await getRegionOverride();
+			if (cancelled) return;
+			if (__DEV__ || isPremium) {
+				setActiveOverride(over);
+			} else {
+				setActiveOverride(null);
+			}
+			if (__DEV__ && devMenuVisible) {
+				const count = await getSpeciesCount();
+				if (!cancelled) setDbCount(count);
+			}
+		}
+		void checkDevData();
+		return () => {
+			cancelled = true;
+		};
+	}, [devMenuVisible, isPremium]);
 
 	function handleEyebrowPress() {
+		if (!__DEV__) return;
 		setEyebrowTaps((prev) => {
 			const next = prev + 1;
 			if (next >= 5) {
@@ -203,6 +403,7 @@ export default function HomeScreen() {
 	}
 
 	async function applyOverride(regionCode: string | null) {
+		if (!__DEV__ && !isPremium) return;
 		await setRegionOverride(regionCode);
 		setActiveOverride(regionCode);
 		setDevMenuVisible(false);
@@ -214,16 +415,33 @@ export default function HomeScreen() {
 	useEffect(() => {
 		let cancelled = false;
 
+		async function resolveEffectiveRegion(): Promise<string> {
+			if (process.env.EXPO_PUBLIC_SCREENSHOT_MODE === "true") {
+				return "CA";
+			}
+			if (!__DEV__) {
+				const existingOverride = await getRegionOverride();
+				if (existingOverride !== null) {
+					const { isPremium: prem, verified } =
+						await isPremiumUserWithVerification();
+					if (verified && !prem) {
+						await setRegionOverride(null);
+						if (!cancelled) setActiveOverride(null);
+					}
+				}
+			}
+			return getRegion();
+		}
+
 		async function load() {
 			setState({ status: "loading" });
-			const date = offsetDate(todayLocalIso(), dayOffset);
+			const today = todayLocalIso();
+			loadedDateRef.current = today;
+			const date = offsetDate(today, dayOffset);
 			let region = "default";
 			try {
-				if (process.env.EXPO_PUBLIC_SCREENSHOT_MODE === "true") {
-					region = "CA";
-				} else {
-					region = await getRegion();
-				}
+				region = await resolveEffectiveRegion();
+				if (cancelled) return;
 				const flower = await fetchDailyFlower(region, date);
 				if (!cancelled) setState({ status: "ok", flower });
 			} catch (e) {
@@ -231,83 +449,73 @@ export default function HomeScreen() {
 				console.error("Flower fetch failed:", e);
 
 				if (e instanceof FlowerFetchError && e.status === 404) {
-					// 404 is a legitimate "coming soon" — keep the error treatment so
-					// the user knows we don't have a flower for that exact date.
-					setState({
-						status: "error",
-						kind: "unpublished",
-						message: ERROR_COPY.unpublished.sub,
-					});
-				} else if (!online) {
-					// Network down: prefer the last successfully fetched flower from
-					// AsyncStorage; fall back to our pre-compiled SQLite species database.
-					const cached = await getCachedFlower();
-					if (cancelled) return;
-					if (cached) {
-						setState({ status: "ok", flower: { ...cached, isDefault: true } });
-					} else {
-						const dbFlower = await getDailyFlowerOffline(region, date);
-						if (cancelled) return;
-						if (dbFlower) {
-							setState({
-								status: "ok",
-								flower: {
-									imageSource: getDefaultFlower(date).imageSource, // daylight variants
-									common: dbFlower.common,
-									latin: dbFlower.latin,
-									blurb: dbFlower.blurb,
-									state: dbFlower.region,
-									date,
-									isDefault: true,
-								},
-							});
-						} else {
-							setState({
-								status: "ok",
-								flower: { ...getDefaultFlower(date), isDefault: true },
-							});
+					if (region !== "default") {
+						try {
+							const defaultFlower = await fetchDailyFlower("default", date);
+							if (!cancelled) setState({ status: "ok", flower: defaultFlower });
+							return;
+						} catch (defaultErr) {
+							if (cancelled) return;
+							const includeCached = !(
+								defaultErr instanceof FlowerFetchError &&
+								defaultErr.status === 404
+							);
+							const fallback = await resolveOfflineFallbackFlower(
+								region,
+								date,
+								includeCached,
+							);
+							if (!cancelled) setState({ status: "ok", flower: fallback });
+							return;
 						}
 					}
+					const fallback = await resolveOfflineFallbackFlower(
+						region,
+						date,
+						false,
+					);
+					if (!cancelled) setState({ status: "ok", flower: fallback });
+				} else if (!online) {
+					const fallback = await resolveOfflineFallbackFlower(
+						region,
+						date,
+						true,
+					);
+					if (!cancelled) setState({ status: "ok", flower: fallback });
 				} else {
 					// 5xx or other: retry once with backoff before falling through.
 					await new Promise((r) => setTimeout(r, 1500));
 					if (cancelled) return;
 					try {
-						region = await getRegion();
+						region = await resolveEffectiveRegion();
+						if (cancelled) return;
 						const flower = await fetchDailyFlower(region, date);
 						if (!cancelled) setState({ status: "ok", flower });
-					} catch {
+					} catch (retryErr) {
 						if (cancelled) return;
-						const cached = await getCachedFlower();
-						if (cancelled) return;
-						if (cached) {
-							setState({
-								status: "ok",
-								flower: { ...cached, isDefault: true },
-							});
-						} else {
-							const dbFlower = await getDailyFlowerOffline(region, date);
-							if (cancelled) return;
-							if (dbFlower) {
-								setState({
-									status: "ok",
-									flower: {
-										imageSource: getDefaultFlower(date).imageSource,
-										common: dbFlower.common,
-										latin: dbFlower.latin,
-										blurb: dbFlower.blurb,
-										state: dbFlower.region,
-										date,
-										isDefault: true,
-									},
-								});
-							} else {
-								setState({
-									status: "ok",
-									flower: { ...getDefaultFlower(date), isDefault: true },
-								});
+						if (
+							retryErr instanceof FlowerFetchError &&
+							retryErr.status === 404 &&
+							region !== "default"
+						) {
+							try {
+								const defaultFlower = await fetchDailyFlower("default", date);
+								if (!cancelled) {
+									setState({ status: "ok", flower: defaultFlower });
+								}
+								return;
+							} catch {
+								if (cancelled) return;
 							}
 						}
+						const is404 =
+							retryErr instanceof FlowerFetchError && retryErr.status === 404;
+						const fallback = await resolveOfflineFallbackFlower(
+							region,
+							date,
+							!is404,
+						);
+						if (!cancelled) setState({ status: "ok", flower: fallback });
 					}
 				}
 			}
@@ -323,9 +531,27 @@ export default function HomeScreen() {
 	}, [dayOffset, reloadKey, online]);
 
 	async function handleUpdateLocation() {
+		const hadOverride =
+			activeOverride !== null || (await getRegionOverride()) !== null;
+		const prevDisplayedRegion =
+			state.status === "ok" ? state.flower.state : null;
+		const isLoading = state.status === "loading";
+		await setRegionOverride(null);
+		setActiveOverride(null);
 		await resetRegion();
-		const { permissionDenied } = await getRegionWithStatus();
+		const { region: nextRegion, permissionDenied } =
+			await getRegionWithStatus();
 		if (permissionDenied) {
+			if (hadOverride) {
+				setDayOffset(0);
+				setReloadKey((k) => k + 1);
+			} else if (
+				isLoading ||
+				(prevDisplayedRegion !== null && nextRegion !== prevDisplayedRegion)
+			) {
+				setDayOffset(0);
+				setReloadKey((k) => k + 1);
+			}
 			Alert.alert(
 				"Location access is off",
 				"To show flowers native to your area, enable location access in Settings.",
@@ -364,13 +590,20 @@ export default function HomeScreen() {
 						},
 					]}
 				>
-					<Pressable onPress={handleEyebrowPress} style={styles.topBar}>
+					<Pressable
+						onPress={__DEV__ ? handleEyebrowPress : undefined}
+						disabled={!__DEV__}
+						style={styles.topBar}
+					>
 						<Text style={styles.eyebrow}>
 							{eyebrowRegion} · {dateLabel}
 						</Text>
 					</Pressable>
 					<Pressable
-						onPress={() => setSearchVisible(true)}
+						onPress={() => {
+							setSearchVisible(true);
+							void getSearchQuotaRemaining().then(setSearchQuota);
+						}}
 						style={styles.searchBarBtn}
 						accessibilityLabel="Search species"
 					>
@@ -403,102 +636,179 @@ export default function HomeScreen() {
 						</View>
 					)}
 
-					{state.status === "ok" && (
-						<View style={styles.cardWrap}>
-							<View style={styles.glow} />
-							<FlipCard
-								key={`${state.flower.date}:${state.flower.state}`}
-								style={{ width: cardW, height: cardH }}
-							>
-								{/* Front: image */}
-								<View style={styles.face}>
-									<Image
-										source={state.flower.imageSource}
-										style={[StyleSheet.absoluteFill, styles.imageRadius]}
-										contentFit="cover"
-										cachePolicy="memory-disk"
-										transition={400}
-										preferHighDynamicRange
-										accessibilityLabel={state.flower.common}
-									/>
-									{__DEV__ && (
-										<View style={styles.sandboxBadge}>
-											<Text style={styles.sandboxBadgeText}>SANDBOX</Text>
-										</View>
-									)}
-									{state.flower.isDefault && (
-										<View style={styles.fallbackBadge}>
-											<Text style={styles.fallbackBadgeText}>
-												OFFLINE · ARCHIVE
-											</Text>
-										</View>
-									)}
-									<IridescentOverlay subtle />
-									<LinearGradient
-										pointerEvents="none"
-										colors={["rgba(0,0,0,0)", "rgba(0,0,0,0.55)"]}
-										style={styles.hintScrim}
-									/>
-									<Text style={styles.hint}>TAP TO READ</Text>
-
-									{/* Expand button — zoom-transitions to the full-screen detail view.
-                      Only shown when we have a real CDN URI (not a bundled fallback). */}
-									{detailImageUri != null && (
-										<Link
-											href={{
-												pathname: "/flower-detail",
-												params: {
-													imageUri: detailImageUri,
-													common: state.flower.common,
-													latin: state.flower.latin,
-													blurb: state.flower.blurb,
-													state: state.flower.state,
-													date: state.flower.date,
-												},
-											}}
-											asChild
-										>
-											<Link.Trigger withAppleZoom>
-												<Pressable
-													style={styles.expandBtn}
-													accessibilityLabel="View full screen"
-													accessibilityRole="button"
-												>
-													<Text style={styles.expandIcon}>↗</Text>
-												</Pressable>
-											</Link.Trigger>
-										</Link>
-									)}
-								</View>
-
-								{/* Back: serif info panel */}
-								<View style={styles.face}>
-									<LinearGradient
-										colors={["#1a1a1a", "#0a0a0a"]}
-										start={{ x: 0, y: 0 }}
-										end={{ x: 0, y: 1 }}
-										style={[styles.back, styles.imageRadius]}
+					{state.status === "ok" &&
+						(() => {
+							const bloomLabel = formatBloomMonths(state.flower.bloomMonths);
+							const isSpecimenCard =
+								activeImageSource == null || imageLoadFailed;
+							const showExpandBtn =
+								detailImageUri != null ||
+								Boolean(state.flower.isPlaceholder) ||
+								imageLoadFailed ||
+								Boolean(state.flower.isDefault);
+							return (
+								<View style={styles.cardWrap}>
+									<View style={styles.glow} />
+									<FlipCard
+										key={`${state.flower.date}:${state.flower.state}`}
+										style={{ width: cardW, height: cardH }}
 									>
-										<IridescentOverlay />
-										<Text style={styles.backEyebrow}>SPECIES</Text>
-										<Text style={styles.common} selectable>
-											{state.flower.common}
-										</Text>
-										<Text style={styles.latin} selectable>
-											{state.flower.latin}
-										</Text>
-										<View style={styles.rule} />
-										<Text style={styles.blurb} selectable>
-											{state.flower.blurb}
-										</Text>
-										<Text style={styles.hintBack} selectable={false}>
-											TAP TO FLIP BACK
-										</Text>
-									</LinearGradient>
+										{/* Front: image or botanical specimen card */}
+										<View style={styles.face}>
+											{!isSpecimenCard ? (
+												<Image
+													source={activeImageSource}
+													onError={handleCardImageError}
+													style={[StyleSheet.absoluteFill, styles.imageRadius]}
+													contentFit="cover"
+													cachePolicy="memory-disk"
+													transition={400}
+													preferHighDynamicRange
+													accessibilityLabel={state.flower.common}
+												/>
+											) : (
+												<LinearGradient
+													colors={["#1a1a20", "#0a0a0c"]}
+													start={{ x: 0, y: 0 }}
+													end={{ x: 0, y: 1 }}
+													style={[styles.back, styles.imageRadius]}
+												>
+													<Text style={specimenStyles.frontEyebrow}>
+														NO PHOTO CACHED · SPECIMEN
+													</Text>
+													<Text style={styles.common} numberOfLines={3}>
+														{state.flower.common}
+													</Text>
+													<Text style={styles.latin}>{state.flower.latin}</Text>
+													<View style={styles.rule} />
+													{bloomLabel !== "" && (
+														<Text style={specimenStyles.bloomText}>
+															BLOOMS: {bloomLabel}
+														</Text>
+													)}
+													<Text style={specimenStyles.specimenNote}>
+														{state.flower.blurb?.trim() ||
+															"Regional specimen record from your offline botanical archive."}
+													</Text>
+												</LinearGradient>
+											)}
+											{__DEV__ && (
+												<View style={styles.sandboxBadge}>
+													<Text style={styles.sandboxBadgeText}>SANDBOX</Text>
+												</View>
+											)}
+											{state.flower.archivedFrom && !state.flower.isDefault && (
+												<View
+													style={[
+														styles.fallbackBadge,
+														showExpandBtn && { right: 56 },
+													]}
+												>
+													<Text style={styles.fallbackBadgeText}>
+														FROM THE ARCHIVE ·{" "}
+														{formatDateLabel(state.flower.archivedFrom)}
+													</Text>
+												</View>
+											)}
+											{state.flower.isDefault && (
+												<View
+													style={[
+														styles.fallbackBadge,
+														showExpandBtn && { right: 56 },
+													]}
+												>
+													<Text style={styles.fallbackBadgeText}>
+														OFFLINE · ARCHIVE
+													</Text>
+												</View>
+											)}
+											<IridescentOverlay subtle />
+											<LinearGradient
+												pointerEvents="none"
+												colors={["rgba(0,0,0,0)", "rgba(0,0,0,0.55)"]}
+												style={styles.hintScrim}
+											/>
+											<Text style={styles.hint}>TAP TO READ</Text>
+
+											{showExpandBtn && (
+												<Link
+													href={{
+														pathname: "/flower-detail",
+														params: {
+															imageUri: imageLoadFailed
+																? ""
+																: (detailImageUri ?? ""),
+															source:
+																state.flower.isPlaceholder || imageLoadFailed
+																	? "offline"
+																	: state.flower.isDefault
+																		? "default"
+																		: "daily",
+															isPlaceholder:
+																state.flower.isPlaceholder || imageLoadFailed
+																	? "1"
+																	: "0",
+															common: state.flower.common,
+															latin: state.flower.latin,
+															blurb: state.flower.blurb,
+															bloomMonths: state.flower.bloomMonths
+																? JSON.stringify(state.flower.bloomMonths)
+																: "",
+															timeOfDay: state.flower.timeOfDay ?? "",
+															state: state.flower.state,
+															date: state.flower.date,
+														},
+													}}
+													asChild
+												>
+													<Link.Trigger withAppleZoom>
+														<Pressable
+															style={styles.expandBtn}
+															accessibilityLabel="View full screen"
+															accessibilityRole="button"
+														>
+															<Text style={styles.expandIcon}>↗</Text>
+														</Pressable>
+													</Link.Trigger>
+												</Link>
+											)}
+										</View>
+
+										{/* Back: serif info panel */}
+										<View style={styles.face}>
+											<LinearGradient
+												colors={["#1a1a1a", "#0a0a0a"]}
+												start={{ x: 0, y: 0 }}
+												end={{ x: 0, y: 1 }}
+												style={[styles.back, styles.imageRadius]}
+											>
+												<IridescentOverlay />
+												<Text style={styles.backEyebrow}>SPECIES</Text>
+												<Text style={styles.common} selectable>
+													{state.flower.common}
+												</Text>
+												<Text style={styles.latin} selectable>
+													{state.flower.latin}
+												</Text>
+												{bloomLabel !== "" && (
+													<Text style={specimenStyles.backBloom}>
+														BLOOM SEASON: {bloomLabel}
+													</Text>
+												)}
+												<View style={styles.rule} />
+												<Text style={styles.blurb} selectable>
+													{state.flower.blurb?.trim() ||
+														"Native regional specimen. Connect to fetch today's botanical photography and notes."}
+												</Text>
+												<Text style={styles.hintBack} selectable={false}>
+													TAP TO FLIP BACK
+												</Text>
+											</LinearGradient>
+										</View>
+									</FlipCard>
 								</View>
-							</FlipCard>
-						</View>
-					)}
+							);
+						})()}
 				</View>
 
 				<View style={styles.nav}>
@@ -597,7 +907,7 @@ export default function HomeScreen() {
 			</SafeAreaView>
 
 			<Modal
-				visible={devMenuVisible}
+				visible={devMenuVisible && (__DEV__ || isPremium)}
 				animationType="slide"
 				transparent={true}
 				onRequestClose={() => setDevMenuVisible(false)}
@@ -605,22 +915,24 @@ export default function HomeScreen() {
 				<View style={styles.modalOverlay}>
 					<View style={styles.modalContent}>
 						<Text style={styles.modalHeader}>
-							{isPremium ? "✈️ Travel Mode" : "Dev Controls"}
+							{isPremium || !__DEV__ ? "✈️ Travel Mode" : "Dev Controls"}
 						</Text>
 
 						<Text style={styles.overrideLabel}>
-							{isPremium ? "Current Destination:" : "Active Location:"}
+							{isPremium || !__DEV__
+								? "Current Destination:"
+								: "Active Location:"}
 						</Text>
 						<Text style={styles.overrideStatus}>
 							{activeOverride
 								? activeOverride
-								: isPremium
+								: isPremium || !__DEV__
 									? "Home (No Active Override)"
 									: "Real System Location (No Override)"}
 						</Text>
 
 						<Text style={styles.sectionTitle}>
-							{isPremium ? "Select Destination" : "Quick Select"}
+							{isPremium || !__DEV__ ? "Select Destination" : "Quick Select"}
 						</Text>
 						<ScrollView
 							contentContainerStyle={styles.chipContainer}
@@ -628,12 +940,12 @@ export default function HomeScreen() {
 							style={{ maxHeight: 150 }}
 						>
 							{[
-								{ code: null, label: "System" },
-								{ code: "default", label: "Default" },
-								{ code: "MX", label: "MX (Mexico)" },
+								{ code: null, label: __DEV__ ? "System" : "My Location" },
+								...(__DEV__ ? [{ code: "default", label: "Default" }] : []),
+								{ code: "MX-MEX", label: "MX-MEX (Mexico)" },
 								{ code: "IS", label: "IS (Iceland)" },
-								{ code: "RU", label: "RU (Russia)" },
-								{ code: "CN", label: "CN (China)" },
+								{ code: "RU-MOW", label: "RU-MOW (Russia)" },
+								{ code: "CN-BJ", label: "CN-BJ (China)" },
 								{ code: "CA-ON", label: "CA-ON (Ontario)" },
 								{ code: "CA-BC", label: "CA-BC" },
 								{ code: "CA", label: "CA (California)" },
@@ -688,48 +1000,52 @@ export default function HomeScreen() {
 							</Pressable>
 						</View>
 
-						<Text style={[styles.sectionTitle, { marginTop: 16 }]}>
-							Diagnostics
-						</Text>
-						<View style={{ marginBottom: 12 }}>
-							<Text
-								style={{
-									color: "rgba(255,255,255,0.7)",
-									fontSize: 13,
-									marginBottom: 4,
-								}}
-							>
-								App Version: {Constants.expoConfig?.version || "Unknown"}
-							</Text>
-							<Text
-								style={{
-									color: "rgba(255,255,255,0.7)",
-									fontSize: 13,
-									marginBottom: 4,
-								}}
-							>
-								OTA Update ID: {Updates.updateId || "None (Dev/Base Build)"}
-							</Text>
-							<Text
-								style={{
-									color: "rgba(255,255,255,0.7)",
-									fontSize: 13,
-									marginBottom: 4,
-								}}
-							>
-								Environment: {__DEV__ ? "Development" : "Production"}
-							</Text>
-							<Text
-								style={{
-									color: "rgba(255,255,255,0.7)",
-									fontSize: 13,
-									marginBottom: 4,
-								}}
-							>
-								Local Species DB:{" "}
-								{dbCount !== null ? `${dbCount} records` : "Loading..."}
-							</Text>
-						</View>
+						{__DEV__ && (
+							<>
+								<Text style={[styles.sectionTitle, { marginTop: 16 }]}>
+									Diagnostics
+								</Text>
+								<View style={{ marginBottom: 12 }}>
+									<Text
+										style={{
+											color: "rgba(255,255,255,0.7)",
+											fontSize: 13,
+											marginBottom: 4,
+										}}
+									>
+										App Version: {Constants.expoConfig?.version || "Unknown"}
+									</Text>
+									<Text
+										style={{
+											color: "rgba(255,255,255,0.7)",
+											fontSize: 13,
+											marginBottom: 4,
+										}}
+									>
+										OTA Update ID: {Updates.updateId || "None (Dev/Base Build)"}
+									</Text>
+									<Text
+										style={{
+											color: "rgba(255,255,255,0.7)",
+											fontSize: 13,
+											marginBottom: 4,
+										}}
+									>
+										Environment: {__DEV__ ? "Development" : "Production"}
+									</Text>
+									<Text
+										style={{
+											color: "rgba(255,255,255,0.7)",
+											fontSize: 13,
+											marginBottom: 4,
+										}}
+									>
+										Local Species DB:{" "}
+										{dbCount !== null ? `${dbCount} records` : "Loading..."}
+									</Text>
+								</View>
+							</>
+						)}
 
 						<Pressable
 							style={styles.dismissBtn}
@@ -750,13 +1066,14 @@ export default function HomeScreen() {
 					setSearchVisible(false);
 					setSearchQuery("");
 					setSearchResults([]);
+					setSearchHint(null);
 				}}
 			>
 				<View style={styles.modalOverlay}>
 					<View
 						style={[styles.modalContent, { maxWidth: 450, maxHeight: "85%" }]}
 					>
-						<Text style={styles.modalHeader}>Vector Vibe Search</Text>
+						<Text style={styles.modalHeader}>Botanical Search</Text>
 						{!isPremium && (
 							<Text style={styles.quotaCount}>
 								Free quota: {searchQuota} of {FREE_SEARCH_LIMIT} searches left
@@ -770,13 +1087,17 @@ export default function HomeScreen() {
 								placeholder="e.g. purple spring poppy or desert cactus..."
 								placeholderTextColor="rgba(255,255,255,0.4)"
 								value={searchQuery}
-								onChangeText={setSearchQuery}
-								onSubmitEditing={handleSearch}
+								onChangeText={(text) => {
+									setSearchQuery(text);
+									if (searchHint) setSearchHint(null);
+								}}
+								onSubmitEditing={() => handleSearch()}
+								maxLength={200}
 								autoCorrect={false}
 							/>
 							<Pressable
 								style={styles.applyBtn}
-								onPress={handleSearch}
+								onPress={() => handleSearch()}
 								disabled={searching}
 							>
 								{searching ? (
@@ -787,7 +1108,7 @@ export default function HomeScreen() {
 							</Pressable>
 						</View>
 
-						{searchQuota <= 0 && !isPremium ? (
+						{searchQuota <= 0 && !isPremium && searchResults.length === 0 ? (
 							<View
 								style={{
 									flex: 1,
@@ -801,12 +1122,15 @@ export default function HomeScreen() {
 									Search Limit Reached
 								</Text>
 								<Text style={styles.premiumLockDesc}>
-									You've used your 3 free daily vector searches. Upgrade to
-									Premium for unlimited offline searches.
+									You've used your 3 free daily searches. Upgrade to Premium for
+									unlimited offline botanical searches.
 								</Text>
 								<Pressable
 									style={styles.premiumLockBtn}
-									onPress={() => setPremiumModalVisible(true)}
+									onPress={() => {
+										setSearchVisible(false);
+										setPremiumModalVisible(true);
+									}}
 								>
 									<Text style={styles.premiumLockBtnText}>
 										UNLOCK UNLIMITED SEARCH
@@ -819,11 +1143,29 @@ export default function HomeScreen() {
 								showsVerticalScrollIndicator={false}
 							>
 								{searchResults.length === 0 && !searching && (
-									<Text style={styles.noResultsText}>
-										{
-											'Type a description or vibe (like "yellow autumn bloom") to search the offline database using semantic embeddings.'
-										}
-									</Text>
+									<>
+										<Text style={styles.noResultsText}>
+											{searchHint ??
+												`Search ${SPECIES_TOTAL_LABEL} native wildflowers from around the world by name, color, season, or region. Works offline, anywhere — no location needed.`}
+										</Text>
+										<Text style={styles.suggestionHeader}>TRY</Text>
+										<View style={styles.suggestionRow}>
+											{SEARCH_SUGGESTIONS.map((term) => (
+												<Pressable
+													key={term}
+													style={styles.suggestionChip}
+													accessibilityRole="button"
+													accessibilityLabel={`Search for ${term}`}
+													onPress={() => {
+														setSearchQuery(term);
+														handleSearch(term);
+													}}
+												>
+													<Text style={styles.suggestionChipText}>{term}</Text>
+												</Pressable>
+											))}
+										</View>
+									</>
 								)}
 								{searchResults.map((result) => {
 									const pct = result.similarity
@@ -837,13 +1179,19 @@ export default function HomeScreen() {
 												setSearchVisible(false);
 												setSearchQuery("");
 												setSearchResults([]);
+												const photo = archivePhotoForLatin(result.latin);
 												router.push({
 													pathname: "/flower-detail",
 													params: {
-														imageUri: "", // Forces local fallback image in details screen
+														imageUri: photo ?? "",
+														source: "search",
+														isPlaceholder: photo ? "0" : "1",
 														common: result.common,
 														latin: result.latin,
-														blurb: result.blurb,
+														blurb: result.blurb ?? "",
+														bloomMonths: JSON.stringify(
+															result.bloomMonths ?? [],
+														),
 														state: result.region,
 														date: todayLocalIso(),
 													},
@@ -863,10 +1211,40 @@ export default function HomeScreen() {
 											</Text>
 											<Text style={styles.searchResultRegion}>
 												Region: {result.region}
+												{archivePhotoForLatin(result.latin)
+													? "  ·  📷 Photo"
+													: ""}
 											</Text>
 										</Pressable>
 									);
 								})}
+								{searchQuota <= 0 && !isPremium && searchResults.length > 0 && (
+									<Pressable
+										style={{
+											marginTop: 12,
+											marginBottom: 4,
+											paddingVertical: 12,
+											paddingHorizontal: 14,
+											borderRadius: 10,
+											borderWidth: 1,
+											borderColor: "rgba(255, 215, 0, 0.22)",
+											backgroundColor: "rgba(255, 215, 0, 0.06)",
+											alignItems: "center",
+										}}
+										onPress={() => {
+											setSearchVisible(false);
+											setSearchResults([]);
+											setPremiumModalVisible(true);
+										}}
+									>
+										<Text style={styles.quotaCount}>
+											0 free searches left today
+										</Text>
+										<Text style={[styles.premiumLockBtnText, { marginTop: 4 }]}>
+											UNLOCK UNLIMITED SEARCH
+										</Text>
+									</Pressable>
+								)}
 							</ScrollView>
 						)}
 
@@ -876,6 +1254,7 @@ export default function HomeScreen() {
 								setSearchVisible(false);
 								setSearchQuery("");
 								setSearchResults([]);
+								setSearchHint(null);
 							}}
 						>
 							<Text style={styles.dismissBtnText}>Close</Text>
@@ -895,3 +1274,33 @@ export default function HomeScreen() {
 		</View>
 	);
 }
+
+const specimenStyles = StyleSheet.create({
+	frontEyebrow: {
+		fontSize: 10,
+		letterSpacing: 2.2,
+		color: PALETTE.accent,
+		fontWeight: "600",
+		marginBottom: 12,
+	},
+	bloomText: {
+		fontSize: 11,
+		letterSpacing: 1.8,
+		color: PALETTE.accent,
+		fontWeight: "600",
+		marginBottom: 10,
+	},
+	specimenNote: {
+		fontFamily: TYPE.serif,
+		fontSize: 14,
+		lineHeight: 22,
+		color: "rgba(255,255,255,0.72)",
+	},
+	backBloom: {
+		marginTop: 12,
+		fontSize: 10,
+		letterSpacing: 1.8,
+		color: PALETTE.accent,
+		fontWeight: "600",
+	},
+});

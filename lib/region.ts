@@ -176,12 +176,15 @@ const LOWERCASE_PROVINCE_NAME_TO_CODE = Object.keys(
 	{} as Record<string, string>,
 );
 
+let regionEpoch = 0;
+
 export async function getRegion(): Promise<string> {
 	const { region } = await getRegionWithStatus();
 	return region;
 }
 
 export async function getRegionWithStatus(): Promise<RegionResult> {
+	const epochAtStart = regionEpoch;
 	const override = await AsyncStorage.getItem(OVERRIDE_KEY);
 	if (override) {
 		return { region: override, permissionDenied: false };
@@ -193,6 +196,12 @@ export async function getRegionWithStatus(): Promise<RegionResult> {
 	if (cached) {
 		if (cached === FALLBACK && !denied) {
 			const result = await resolveRegion();
+			if (epochAtStart !== regionEpoch) {
+				return {
+					region: (await getCachedRegion()) ?? FALLBACK,
+					permissionDenied: await isPermissionDenied(),
+				};
+			}
 			await AsyncStorage.setItem(STORAGE_KEY, result.region);
 			return result;
 		}
@@ -200,6 +209,12 @@ export async function getRegionWithStatus(): Promise<RegionResult> {
 	}
 
 	const result = await resolveRegion();
+	if (epochAtStart !== regionEpoch) {
+		return {
+			region: (await getCachedRegion()) ?? FALLBACK,
+			permissionDenied: await isPermissionDenied(),
+		};
+	}
 	await AsyncStorage.setItem(STORAGE_KEY, result.region);
 	return result;
 }
@@ -298,7 +313,11 @@ async function resolveRegion(): Promise<RegionResult> {
 
 function stateNameToCode(region: string): string | null {
 	if (!region) return null;
-	const cleaned = region.trim().toLowerCase();
+	const cleaned = region
+		.trim()
+		.normalize("NFD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.toLowerCase();
 	if (LOWERCASE_STATE_CODES.has(cleaned)) {
 		return cleaned.toUpperCase();
 	}
@@ -307,15 +326,24 @@ function stateNameToCode(region: string): string | null {
 
 function provinceNameToCode(region: string): string | null {
 	if (!region) return null;
-	const cleaned = region.trim().toLowerCase();
+	const cleaned = region
+		.trim()
+		.normalize("NFD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.toLowerCase();
 	if (LOWERCASE_PROVINCE_CODES.has(cleaned)) {
 		return cleaned.toUpperCase();
 	}
 	return LOWERCASE_PROVINCE_NAME_TO_CODE[cleaned] ?? null;
 }
 
+export async function getCachedRegion(): Promise<string | null> {
+	return await AsyncStorage.getItem(STORAGE_KEY);
+}
+
 /** Test/debug helper — clears the cached region so the next call re-prompts. */
 export async function resetRegion(): Promise<void> {
+	regionEpoch += 1;
 	await AsyncStorage.removeItem(STORAGE_KEY);
 }
 
@@ -412,19 +440,27 @@ const COUNTRY_TO_REGION: Record<string, string> = {
 	TD: "AF-CENTRAL",
 };
 
+function normalizeRegionName(region: string): string {
+	return region
+		.trim()
+		.normalize("NFD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.toLowerCase();
+}
+
 function resolveMXRegion(region?: string | null): string {
 	if (!region) return "MX-MEX";
-	const r = region.toLowerCase();
+	const r = normalizeRegionName(region);
 	if (r.includes("jalisco")) return "MX-JAL";
 	if (r.includes("oaxaca")) return "MX-OAX";
-	if (r.includes("nuevo leon") || r.includes("nuevo león")) return "MX-NLE";
-	if (r.includes("yucatan") || r.includes("yucatán")) return "MX-YUC";
+	if (r.includes("nuevo leon")) return "MX-NLE";
+	if (r.includes("yucatan")) return "MX-YUC";
 	return "MX-MEX";
 }
 
 function resolveCNRegion(region?: string | null): string {
 	if (!region) return "CN-BJ";
-	const r = region.toLowerCase();
+	const r = normalizeRegionName(region);
 	if (r.includes("guangdong")) return "CN-GD";
 	if (r.includes("sichuan")) return "CN-SC";
 	if (r.includes("zhejiang")) return "CN-ZJ";
@@ -434,7 +470,7 @@ function resolveCNRegion(region?: string | null): string {
 
 function resolveRURegion(region?: string | null): string {
 	if (!region) return "RU-MOW";
-	const r = region.toLowerCase();
+	const r = normalizeRegionName(region);
 	if (
 		r.includes("moscow") ||
 		r.includes("moskva") ||
@@ -473,50 +509,41 @@ function resolveRURegion(region?: string | null): string {
 
 function resolveBRRegion(region?: string | null): string {
 	if (!region) return "BR-SP";
-	const r = region.toLowerCase();
+	const r = normalizeRegionName(region);
 	if (
 		r.includes("sao paulo") ||
-		r.includes("são paulo") ||
 		r.includes("rio de janeiro") ||
 		r.includes("minas") ||
-		r.includes("espirito") ||
-		r.includes("espírito")
+		r.includes("espirito")
 	)
 		return "BR-SP";
-	if (
-		r.includes("amazon") ||
-		r.includes("para ") ||
-		r.includes("pará") ||
-		r.includes("acre") ||
-		r.includes("roraima") ||
-		r.includes("rondonia") ||
-		r.includes("rondônia") ||
-		r.includes("amapa") ||
-		r.includes("amapá") ||
-		r.includes("tocantin")
-	)
-		return "BR-AM";
 	if (
 		r.includes("bahia") ||
 		r.includes("pernambuco") ||
 		r.includes("ceara") ||
-		r.includes("ceará") ||
 		r.includes("rio grande do norte") ||
 		r.includes("paraiba") ||
-		r.includes("paraíba") ||
 		r.includes("alagoas") ||
 		r.includes("sergipe") ||
 		r.includes("piau") ||
-		r.includes("maranhao") ||
-		r.includes("maranhão")
+		r.includes("maranhao")
 	)
 		return "BR-BA";
 	if (
 		r.includes("rio grande do sul") ||
 		r.includes("santa catarina") ||
-		r.includes("parana") ||
-		r.includes("paraná")
+		r.includes("parana")
 	)
 		return "BR-RS";
+	if (
+		r.includes("amazon") ||
+		/\bpara\b/.test(r) ||
+		r.includes("acre") ||
+		r.includes("roraima") ||
+		r.includes("rondonia") ||
+		r.includes("amapa") ||
+		r.includes("tocantin")
+	)
+		return "BR-AM";
 	return "BR-SP";
 }

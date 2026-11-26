@@ -1,10 +1,8 @@
 # Smoke test: app launches and the daily flower screen resolves.
 #
-# App IDs:
-#   Expo Go (iOS)    [local dev]: host.exp.Exponent
-#   Expo Go (Android)[local dev]: host.exp.exponent
-#   Dev client (iOS) [CI/prod]:   com.djscottyb.playinginthesandoxlookingatflowers
-appId: host.exp.Exponent
+# App ID:
+#   Dev client / production (iOS & Android): com.djscottyb.playinginthesandoxlookingatflowers
+appId: com.djscottyb.playinginthesandoxlookingatflowers
 ---
 - runFlow: subflows/connect.yml
 

@@ -1,6 +1,6 @@
 # Flip card: verify tapping the flower card flips between the image (front)
 # and the species info panel (back).
-appId: host.exp.Exponent
+appId: com.djscottyb.playinginthesandoxlookingatflowers
 ---
 - runFlow: subflows/connect.yml
 

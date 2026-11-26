@@ -84,8 +84,8 @@
 			"eas": {
 				"projectId": "e8192c1a-82b3-4aa0-bca3-65437def1fc6"
 			},
-			"encryptionDocPath": "./ENCRYPTION_NOTICE.md",
-			"dsaCompliancePath": "./DSA_COMPLIANCE.md",
+			"encryptionDocPath": "./meta/ENCRYPTION_NOTICE.md",
+			"dsaCompliancePath": "./meta/DSA_COMPLIANCE.md",
 			"privacyPolicyUrl": "https://thescottyb.github.io/playing-in-the-sandbox-staring-at-flowers/privacy.html",
 			"supportUrl": "https://github.com/TheScottyB/playing-in-the-sandbox-staring-at-flowers/issues",
 			"appStore": {

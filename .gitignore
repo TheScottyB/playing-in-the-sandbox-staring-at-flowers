@@ -30,7 +30,8 @@ yarn-error.*
 *.pem
 
 # local env files
-.env*.local
+.env*
+!.env.example
 
 # npm lockfile (project uses pnpm)
 package-lock.json
@@ -42,8 +43,10 @@ package-lock.json
 # Build artifacts and sensitive files
 app.ipa
 credentials.json
-ios/
-android/
+/ios/
+/android/
+credentials/
+shared/design-assets/
 
 
 
@@ -59,4 +62,3 @@ build-*.ipa
 # Google Play service account key (do not commit)
 google-service-account.json
 .vercel
-.env

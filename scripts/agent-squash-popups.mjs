@@ -1,22 +1,96 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ENV_PATH = path.join(process.cwd(), ".env.local");
+export const APP_ID = "com.djscottyb.playinginthesandoxlookingatflowers";
 
-function getApiKey() {
-	if (!fs.existsSync(ENV_PATH)) {
-		throw new Error(".env.local not found");
-	}
-	const envContent = fs.readFileSync(ENV_PATH, "utf-8");
-	const match = envContent.match(/^GEMINI_API_KEY=(.*)$/m);
-	if (!match) {
-		throw new Error("GEMINI_API_KEY not found in .env.local");
-	}
-	return match[1].trim();
+function defaultSleep(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function analyzeScreenshot(apiKey, base64Image) {
+export function parseRetryAfterMs(headers) {
+	const raw = headers?.get?.("Retry-After") ?? headers?.get?.("retry-after");
+	if (typeof raw !== "string") return null;
+	const trimmed = raw.trim();
+	if (trimmed === "") return null;
+	const seconds = Number(trimmed);
+	if (Number.isFinite(seconds)) {
+		return seconds >= 0 ? Math.round(seconds * 1000) : null;
+	}
+	const dateMs = Date.parse(trimmed);
+	if (!Number.isNaN(dateMs)) {
+		return Math.max(0, dateMs - Date.now());
+	}
+	return null;
+}
+
+export function getApiKey(envPath = path.join(process.cwd(), ".env.local")) {
+	const envKey = process.env.GEMINI_API_KEY?.trim();
+	if (envKey) {
+		return envKey;
+	}
+	if (!fs.existsSync(envPath)) {
+		throw new Error(
+			"GEMINI_API_KEY environment variable not set and .env.local not found",
+		);
+	}
+	const envContent = fs.readFileSync(envPath, "utf-8");
+	const match = envContent.match(/^GEMINI_API_KEY=(.*)$/m);
+	if (!match?.[1].trim()) {
+		throw new Error("GEMINI_API_KEY not found in .env.local");
+	}
+	let val = match[1].trim();
+	if (
+		(val.startsWith('"') && val.endsWith('"')) ||
+		(val.startsWith("'") && val.endsWith("'"))
+	) {
+		val = val.slice(1, -1);
+	}
+	return val;
+}
+
+function parseSipsField(output, key) {
+	if (!output) return null;
+	const match = output.match(new RegExp(`^\\s+${key}:\\s*(.+)$`, "m"));
+	return match ? match[1].trim() : null;
+}
+
+export function computeTapPercentages(x, y, width, height) {
+	if (!Number.isFinite(x) || !Number.isFinite(y)) {
+		throw new Error(`Invalid popup coordinates from Gemini: x=${x}, y=${y}`);
+	}
+	const safeW = Number.isFinite(width) && width > 0 ? width : 1242;
+	const safeH = Number.isFinite(height) && height > 0 ? height : 2688;
+	const clampPct = (val) => Math.min(100, Math.max(0, Math.round(val)));
+	return {
+		xPct: clampPct((x / safeW) * 100),
+		yPct: clampPct((y / safeH) * 100),
+	};
+}
+
+export function buildTapFlowYaml(xPct, yPct) {
+	if (!Number.isFinite(xPct) || !Number.isFinite(yPct)) {
+		throw new Error(`Invalid tap percentages: xPct=${xPct}, yPct=${yPct}`);
+	}
+	const clampedX = Math.min(100, Math.max(0, xPct));
+	const clampedY = Math.min(100, Math.max(0, yPct));
+	return `appId: ${APP_ID}
+---
+- tapOn:
+    point: ${clampedX}%, ${clampedY}%
+`;
+}
+
+export async function analyzeScreenshot(apiKey, base64Image, options = {}) {
+	const {
+		fetchImpl = globalThis.fetch,
+		sleepImpl = defaultSleep,
+		backoffBaseMs = 5000,
+		maxAttempts = 3,
+	} = options;
+
 	const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`;
 
 	const payload = {
@@ -50,13 +124,35 @@ Do NOT include any markdown formatting or backticks. Return raw JSON.`,
 		},
 	};
 
-	const response = await fetch(url, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(payload),
-	});
+	let lastErr;
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		let response;
+		try {
+			response = await fetchImpl(url, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload),
+			});
+		} catch (networkErr) {
+			lastErr = networkErr;
+			if (attempt === maxAttempts) throw lastErr;
+			const waitMs = backoffBaseMs * attempt;
+			console.warn(
+				`Gemini retry ${attempt}/${maxAttempts - 1} after ${waitMs}ms (${networkErr.message})`,
+			);
+			await sleepImpl(waitMs);
+			continue;
+		}
 
-	if (!response.ok) {
+		if (response.ok) {
+			const data = await response.json();
+			const textResponse = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+			if (!textResponse) {
+				throw new Error("No text in Gemini response");
+			}
+			return JSON.parse(textResponse);
+		}
+
 		const text = await response.text();
 		let errorObj;
 		try {
@@ -64,108 +160,161 @@ Do NOT include any markdown formatting or backticks. Return raw JSON.`,
 		} catch (_e) {}
 
 		const errorMessage = errorObj?.error?.message || text;
-		const isBillingOrQuota =
-			response.status === 429 ||
-			errorMessage.includes("prepayment credits") ||
+		const isQuotaExhaustedBody =
 			errorMessage.includes("RESOURCE_EXHAUSTED") ||
 			errorObj?.error?.status === "RESOURCE_EXHAUSTED";
+		const isPermanentBillingOrAuth =
+			response.status === 402 ||
+			response.status === 403 ||
+			errorMessage.includes("prepayment credits") ||
+			errorMessage.includes("API key not valid") ||
+			(response.status !== 429 &&
+				!isQuotaExhaustedBody &&
+				/\bbilling\b/i.test(errorMessage));
 
-		if (isBillingOrQuota) {
-			console.error(
-				"\n======================================================================",
+		if (isPermanentBillingOrAuth) {
+			const fatalErr = new Error(
+				`Gemini billing/auth error (${response.status}): ${errorMessage}`,
 			);
-			console.error("🔴 CRITICAL GEMINI API ERROR: BILLING OR QUOTA EXHAUSTED");
-			console.error(errorMessage);
-			console.error(
-				"======================================================================\n",
-			);
-			process.exit(1);
+			fatalErr.isFatalBillingOrQuota = true;
+			throw fatalErr;
 		}
 
-		throw new Error(`Gemini API error: ${response.status} ${text}`);
+		lastErr = new Error(`Gemini API error: ${response.status} ${text}`);
+
+		const retryable = response.status === 429 || response.status >= 500;
+		if (!retryable || attempt === maxAttempts) {
+			if (response.status === 429 || isQuotaExhaustedBody) {
+				const quotaErr = new Error(
+					`Gemini quota exhausted after ${attempt} attempts (${response.status}): ${errorMessage}`,
+				);
+				quotaErr.isFatalBillingOrQuota = true;
+				throw quotaErr;
+			}
+			throw lastErr;
+		}
+
+		const retryAfterMs = parseRetryAfterMs(response.headers);
+		const waitMs =
+			retryAfterMs !== null ? retryAfterMs : backoffBaseMs * attempt;
+
+		console.warn(
+			`Gemini retry ${attempt}/${maxAttempts - 1} after ${waitMs}ms (${response.status})`,
+		);
+		await sleepImpl(waitMs);
 	}
 
-	const data = await response.json();
-	const textResponse = data.candidates[0].content.parts[0].text;
-	return JSON.parse(textResponse);
+	throw lastErr;
 }
 
-async function main() {
+export async function main() {
 	console.log("🤖 Starting AI Agent Popup Squasher...");
 	const apiKey = getApiKey();
 	const maxIterations = 10;
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "squash-popups-"));
 
-	for (let i = 0; i < maxIterations; i++) {
-		console.log(`\n[Iteration ${i + 1}] Taking screenshot...`);
-		const screenshotPath = "/tmp/squash-screenshot.png";
-		try {
-			execSync(`xcrun simctl io booted screenshot ${screenshotPath}`, {
-				stdio: "ignore",
-			});
-		} catch (_e) {
-			console.error("Failed to take screenshot. Is the simulator booted?");
-			process.exit(1);
-		}
+	try {
+		const screenshotPath = path.join(tempDir, "squash-screenshot.png");
+		const tempFlowPath = path.join(tempDir, "temp-squash-tap.yml");
 
-		const base64Image = fs.readFileSync(screenshotPath).toString("base64");
+		for (let i = 0; i < maxIterations; i++) {
+			console.log(`\n[Iteration ${i + 1}] Taking screenshot...`);
+			try {
+				execFileSync(
+					"xcrun",
+					["simctl", "io", "booted", "screenshot", screenshotPath],
+					{
+						stdio: "ignore",
+					},
+				);
+			} catch (_e) {
+				console.error("Failed to take screenshot. Is the simulator booted?");
+				process.exitCode = 1;
+				return;
+			}
 
-		console.log("Analyzing with Gemini 2.0 Flash...");
-		let result;
-		try {
-			result = await analyzeScreenshot(apiKey, base64Image);
-		} catch (e) {
-			console.error("Analysis failed:", e.message);
-			break;
-		}
+			const base64Image = fs.readFileSync(screenshotPath).toString("base64");
 
-		if (!result.hasPopup) {
-			console.log("✅ Screen is clear! Proceeding...");
-			break;
-		}
+			console.log("Analyzing with Gemini Flash...");
+			let result;
+			try {
+				result = await analyzeScreenshot(apiKey, base64Image);
+			} catch (e) {
+				console.error("Analysis failed:", e.message);
+				if (e?.isFatalBillingOrQuota) {
+					process.exitCode = 1;
+				}
+				break;
+			}
 
-		console.log(
-			`⚠️ Found popup: "${result.reason}". Tapping at (${result.x}, ${result.y})...`,
-		);
-
-		try {
-			const wStr = execSync(
-				`sips -g pixelWidth /tmp/squash-screenshot.png | awk '/pixelWidth/ {print $2}'`,
-				{ encoding: "utf-8" },
-			).trim();
-			const hStr = execSync(
-				`sips -g pixelHeight /tmp/squash-screenshot.png | awk '/pixelHeight/ {print $2}'`,
-				{ encoding: "utf-8" },
-			).trim();
-			const width = parseInt(wStr, 10) || 1242;
-			const height = parseInt(hStr, 10) || 2688;
-
-			const xPct = Math.round((result.x / width) * 100);
-			const yPct = Math.round((result.y / height) * 100);
+			if (!result?.hasPopup) {
+				console.log("✅ Screen is clear! Proceeding...");
+				break;
+			}
 
 			console.log(
-				`     Calculated percentage: ${xPct}%, ${yPct}% of ${width}x${height}`,
+				`⚠️ Found popup: "${result.reason}". Tapping at (${result.x}, ${result.y})...`,
 			);
 
-			const tempFlowPath = "/tmp/temp-squash-tap.yml";
-			fs.writeFileSync(
-				tempFlowPath,
-				`appId: host.exp.Exponent
----
-- tapOn:
-    point: ${xPct}%, ${yPct}%
-`,
-			);
-			execSync(`maestro test ${tempFlowPath}`, { stdio: "ignore" });
-		} catch (clickErr) {
-			console.error("Failed to click popup via Maestro:", clickErr.message);
+			try {
+				let width = 1242;
+				let height = 2688;
+				try {
+					const sipsOut = execFileSync(
+						"sips",
+						["-g", "pixelWidth", "-g", "pixelHeight", screenshotPath],
+						{ encoding: "utf-8" },
+					);
+					width =
+						Number.parseInt(parseSipsField(sipsOut, "pixelWidth") ?? "", 10) ||
+						1242;
+					height =
+						Number.parseInt(parseSipsField(sipsOut, "pixelHeight") ?? "", 10) ||
+						2688;
+				} catch (_sipsErr) {
+					// Keep default simulator dimensions if sips is unavailable
+				}
+
+				const { xPct, yPct } = computeTapPercentages(
+					result.x,
+					result.y,
+					width,
+					height,
+				);
+
+				console.log(
+					`     Calculated percentage: ${xPct}%, ${yPct}% of ${width}x${height}`,
+				);
+
+				fs.writeFileSync(tempFlowPath, buildTapFlowYaml(xPct, yPct));
+				execFileSync("maestro", ["test", tempFlowPath], { stdio: "ignore" });
+			} catch (clickErr) {
+				console.error("Failed to click popup via Maestro:", clickErr.message);
+			}
+
+			// Wait for dismissal animation
+			await defaultSleep(2000);
 		}
-
-		// Wait for dismissal animation
-		execSync("sleep 2");
+	} finally {
+		fs.rmSync(tempDir, { recursive: true, force: true });
 	}
 }
 
-main().catch((err) => {
-	console.error("Fatal error in agent squasher:", err);
-	process.exit(1);
-});
+function isMainModule() {
+	if (!process.argv[1]) return false;
+	try {
+		return (
+			fs.realpathSync(fileURLToPath(import.meta.url)) ===
+			fs.realpathSync(path.resolve(process.argv[1]))
+		);
+	} catch {
+		return false;
+	}
+}
+
+if (isMainModule()) {
+	main().catch((err) => {
+		console.error("Fatal error in agent squasher:", err);
+		process.exitCode = 1;
+	});
+}

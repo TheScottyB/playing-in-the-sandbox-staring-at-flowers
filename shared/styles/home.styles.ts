@@ -395,6 +395,32 @@ export const styles = StyleSheet.create({
 		fontWeight: "600",
 		letterSpacing: 1,
 	},
+	suggestionHeader: {
+		color: "rgba(255,255,255,0.45)",
+		fontSize: 11,
+		letterSpacing: 2,
+		marginTop: 18,
+		marginBottom: 8,
+		textAlign: "center",
+	},
+	suggestionRow: {
+		flexDirection: "row",
+		flexWrap: "wrap",
+		justifyContent: "center",
+		gap: 8,
+	},
+	suggestionChip: {
+		paddingVertical: 8,
+		paddingHorizontal: 14,
+		borderRadius: 16,
+		borderWidth: 1,
+		borderColor: "rgba(255,255,255,0.2)",
+		backgroundColor: "rgba(255,255,255,0.06)",
+	},
+	suggestionChipText: {
+		color: "rgba(255,255,255,0.85)",
+		fontSize: 14,
+	},
 	noResultsText: {
 		color: "rgba(255,255,255,0.4)",
 		fontSize: 14,

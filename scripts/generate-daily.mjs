@@ -1,23 +1,27 @@
 #!/usr/bin/env node
 /**
- * Generates one flower image + sidecar JSON per state bucket for today's date
- * and writes them to docs/daily/{state}/{YYYY-MM-DD}.{png,json}.
+ * Generates one flower image + sidecar JSON per region bucket for a target date
+ * and writes them to docs/daily/{region}/{YYYY-MM-DD}.{png,json}.
  *
  * Usage:
- *   GEMINI_API_KEY=... node scripts/generate-daily.mjs [--date YYYY-MM-DD] [--states AL,TX] [--missing-only]
+ *   GEMINI_API_KEY=... node scripts/generate-daily.mjs [--date YYYY-MM-DD] [--states AL,TX] [--missing-only] [--us-only] [--warehouse-dir /path]
  *
  * Flags:
- *   --date YYYY-MM-DD  Target date (default: today UTC).
- *   --states AL,TX     Comma-separated state codes (default: every bucket in species.json).
- *   --missing-only     Skip states that already have both files for the target date.
- *                      Lets backfill runs avoid re-paying for completed states.
+ *   --date YYYY-MM-DD     Target date (default: today UTC).
+ *   --states AL,TX        Comma-separated region codes (default: every bucket in species.json).
+ *   --missing-only        Skip regions that already have both files for the target date.
+ *                         Lets backfill runs avoid re-paying for completed regions.
+ *   --us-only             Limit generation to US states + DC (default: all 112 regions).
+ *   --warehouse-dir PATH  Optional directory to back up retired PNGs (overrides DAILY_WAREHOUSE_DIR).
  *
  * Environment:
- *   GEMINI_API_KEY  Required. Google AI Studio key with Gemini 2.5 Flash access.
- *   DRY_RUN        Set to "1" to skip actual API calls (writes placeholder files).
+ *   GEMINI_API_KEY        Required unless DRY_RUN=1. Google AI Studio key with
+ *                         Gemini image generation access (gemini-3.1-flash-image / gemini-3.1-flash-lite-image).
+ *   DRY_RUN               Set to "1" to skip actual API calls (writes placeholder files).
+ *   DAILY_WAREHOUSE_DIR   Optional directory for backing up retired PNGs on day 9+.
  *
  * Exit codes:
- *   0  Run completed (whether or not every state succeeded). The workflow's
+ *   0  Run completed (whether or not every region succeeded). The workflow's
  *      commit step still runs so partial progress is persisted.
  *   1  Hard precondition failure (no API key, missing species.json, etc.).
  */
@@ -29,11 +33,12 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Jimp, JimpMime } from "jimp";
 
@@ -43,17 +48,31 @@ const DOCS_DIR = join(ROOT, "docs", "daily");
 const IMG_EXT = "png"; // Daily images are generated as high-res PNGs
 const SPECIES_PATH = join(ROOT, "lib", "data", "species.json");
 
-const GEMINI_MODELS = [
+export const GEMINI_MODELS = [
 	"gemini-3.1-flash-image",
 	"gemini-3.1-flash-lite-image",
 ];
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 // Generation scope & performance configuration
-const US_ONLY = true; // Set to false to enable Rest of World (ROW) generation in the future
 const CONCURRENCY = 5; // Number of parallel API requests (safe for billing-enabled keys)
 
-const US_STATES = new Set([
+const MONTH_NAMES = [
+	"January",
+	"February",
+	"March",
+	"April",
+	"May",
+	"June",
+	"July",
+	"August",
+	"September",
+	"October",
+	"November",
+	"December",
+];
+
+export const US_STATES = new Set([
 	"AL",
 	"AK",
 	"AZ",
@@ -107,36 +126,99 @@ const US_STATES = new Set([
 	"DC",
 ]);
 
-// Parse CLI args
-const args = process.argv.slice(2);
-function argVal(flag) {
-	const i = args.indexOf(flag);
-	return i !== -1 ? args[i + 1] : null;
-}
-function argFlag(flag) {
-	return args.includes(flag);
+function defaultSleep(ms) {
+	return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
-const targetDate = argVal("--date") ?? todayIso();
-const targetStates = argVal("--states")?.split(",") ?? null;
-const missingOnly = argFlag("--missing-only");
+export function parseCliArgs(argv = process.argv.slice(2)) {
+	function argVal(flag) {
+		const i = argv.indexOf(flag);
+		if (i === -1 || i + 1 >= argv.length) return null;
+		const val = argv[i + 1];
+		return val && !val.startsWith("--") ? val : null;
+	}
+	function argFlag(flag) {
+		return argv.includes(flag);
+	}
 
-function todayIso() {
-	const d = new Date();
-	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+	const rawStates = argVal("--states");
+	const targetStates = rawStates
+		? rawStates
+				.split(",")
+				.map((s) => s.trim())
+				.filter(Boolean)
+		: null;
+
+	return {
+		targetDate: argVal("--date") ?? todayIso(),
+		targetStates: targetStates && targetStates.length > 0 ? targetStates : null,
+		missingOnly: argFlag("--missing-only"),
+		usOnly: argFlag("--us-only"),
+		warehouseDir: argVal("--warehouse-dir"),
+	};
+}
+
+export function todayIso(now = new Date()) {
+	return now.toISOString().slice(0, 10);
+}
+
+export function isValidIsoDate(dateStr) {
+	if (typeof dateStr !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+		return false;
+	}
+	const [yearStr, monthStr, dayStr] = dateStr.split("-");
+	const year = Number(yearStr);
+	const month = Number(monthStr);
+	const day = Number(dayStr);
+	const parsed = new Date(Date.UTC(year, month - 1, day));
+	return (
+		!Number.isNaN(parsed.getTime()) &&
+		parsed.getUTCFullYear() === year &&
+		parsed.getUTCMonth() === month - 1 &&
+		parsed.getUTCDate() === day
+	);
+}
+
+export function parseRetryAfterMs(headers) {
+	const raw = headers?.get?.("Retry-After") ?? headers?.get?.("retry-after");
+	if (typeof raw !== "string") return null;
+	const trimmed = raw.trim();
+	if (trimmed === "") return null;
+	const seconds = Number(trimmed);
+	if (Number.isFinite(seconds)) {
+		return seconds >= 0 ? Math.round(seconds * 1000) : null;
+	}
+	const dateMs = Date.parse(trimmed);
+	if (!Number.isNaN(dateMs)) {
+		return Math.max(0, dateMs - Date.now());
+	}
+	return null;
+}
+
+export function monthNameForDate(date) {
+	if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+		const monthIndex = Number(date.slice(5, 7)) - 1;
+		if (monthIndex >= 0 && monthIndex < MONTH_NAMES.length) {
+			return MONTH_NAMES[monthIndex];
+		}
+	}
+	return MONTH_NAMES[new Date().getUTCMonth()];
 }
 
 /** Deterministic index — same state+date always picks the same species. */
-function pickSpecies(species, state, date) {
+export function pickSpecies(species, state, date) {
+	if (!Array.isArray(species) || species.length === 0) {
+		throw new Error(`Invalid or empty species list for ${state}`);
+	}
 	const month = Number(date.slice(5, 7));
-	const inSeason = species.filter((s) => s.bloomMonths.includes(month));
+	const inSeason = species.filter((s) => s.bloomMonths?.includes(month));
 	const pool = inSeason.length > 0 ? inSeason : species;
 	const hash = createHash("sha256").update(`${state}:${date}`).digest("hex");
 	const idx = Number(BigInt(`0x${hash.slice(0, 8)}`) % BigInt(pool.length));
 	return pool[idx];
 }
 
-function getRegionPromptText(state) {
+export function getRegionPromptText(state) {
 	const countryNames = {
 		GTM: "Guatemala",
 		BLZ: "Belize",
@@ -215,16 +297,47 @@ function getRegionPromptText(state) {
 	return `the "${state}" region of the US`;
 }
 
-async function generateImage(apiKey, species, state, modelName) {
-	const month = new Date().toLocaleString("en-US", { month: "long" });
+export function buildImagePrompt(species, state, targetDate = todayIso()) {
+	const month = monthNameForDate(targetDate);
 	const regionText = getRegionPromptText(state);
-	const prompt =
+	return (
 		`Generate a beautiful, highly detailed photorealistic image of a ${species.common} ` +
 		`(${species.latin}) in full bloom, native to ${regionText} and blooming in ${month}. ` +
 		`Soft natural lighting, botanically accurate, white or softly blurred outdoor background. ` +
 		`No text, no watermarks, portrait orientation.\n\n` +
 		`After the image, write exactly one sentence (max 280 characters) describing this flower's ` +
-		`appearance or ecological significance. Start directly with the description — no preamble.`;
+		`appearance or ecological significance. Start directly with the description — no preamble.`
+	);
+}
+
+export function selectTargetRegions(
+	allSpecies,
+	{ targetStates = null, usOnly = false } = {},
+) {
+	if (Array.isArray(targetStates) && targetStates.length > 0) {
+		return targetStates.map((s) => s.trim()).filter(Boolean);
+	}
+	const allKeys = Object.keys(allSpecies);
+	return usOnly ? allKeys.filter((s) => US_STATES.has(s)) : allKeys;
+}
+
+export async function generateImage(
+	apiKey,
+	species,
+	state,
+	modelName,
+	targetDate = todayIso(),
+	options = {},
+) {
+	const {
+		fetchImpl = globalThis.fetch,
+		sleepImpl = defaultSleep,
+		backoffBaseMs = 5000,
+		maxAttempts = 3,
+	} = options;
+
+	const month = monthNameForDate(targetDate);
+	const prompt = buildImagePrompt(species, state, targetDate);
 
 	const body = {
 		contents: [{ parts: [{ text: prompt }] }],
@@ -233,17 +346,28 @@ async function generateImage(apiKey, species, state, modelName) {
 
 	const url = `${GEMINI_BASE}/models/${modelName}:generateContent?key=${apiKey}`;
 
-	// Retry on 429 (rate limit) and 5xx (transient) with exponential backoff.
-	// Free-tier Gemini occasionally rate-limits even at 9 rpm, especially for
-	// image generation, so a short retry is cheaper than waiting until tomorrow.
-	const maxAttempts = 3;
+	// Retry on 429 (rate limit), 5xx (transient), and network errors with backoff.
+	// Free-tier/burst Gemini occasionally returns 429 / RESOURCE_EXHAUSTED transiently,
+	// so retry before concluding quota is exhausted.
 	let lastErr;
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-		const resp = await fetch(url, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
-		});
+		let resp;
+		try {
+			resp = await fetchImpl(url, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+		} catch (networkErr) {
+			lastErr = networkErr;
+			if (attempt === maxAttempts) throw lastErr;
+			const waitMs = backoffBaseMs * attempt;
+			console.warn(
+				`    retry ${attempt}/${maxAttempts - 1} after ${waitMs}ms (network error: ${networkErr.message})`,
+			);
+			await sleepImpl(waitMs);
+			continue;
+		}
 
 		if (resp.ok) {
 			const json = await resp.json();
@@ -272,34 +396,61 @@ async function generateImage(apiKey, species, state, modelName) {
 		} catch (_e) {}
 
 		const errorMessage = errorObj?.error?.message || text;
-		const isBillingOrQuota =
-			resp.status === 429 ||
-			errorMessage.includes("prepayment credits") ||
+		const isQuotaExhaustedBody =
 			errorMessage.includes("RESOURCE_EXHAUSTED") ||
 			errorObj?.error?.status === "RESOURCE_EXHAUSTED";
+		const isPermanentBillingOrAuth =
+			resp.status === 402 ||
+			resp.status === 403 ||
+			errorMessage.includes("prepayment credits") ||
+			(resp.status !== 429 &&
+				!isQuotaExhaustedBody &&
+				/\bbilling\b/i.test(errorMessage));
 
-		if (isBillingOrQuota) {
+		if (isPermanentBillingOrAuth) {
 			console.error(
 				"\n======================================================================",
 			);
-			console.error("🔴 CRITICAL GEMINI API ERROR: BILLING OR QUOTA EXHAUSTED");
+			console.error(
+				"🔴 CRITICAL GEMINI API ERROR: BILLING OR AUTHORIZATION FAILURE",
+			);
 			console.error(errorMessage);
 			console.error(
 				"======================================================================\n",
 			);
-			throw new Error("Quota Exhausted for this model");
+			throw new Error(
+				`Gemini billing/auth error (${resp.status}): ${errorMessage.slice(0, 200)}`,
+			);
 		}
 
 		lastErr = new Error(`Gemini ${resp.status}: ${errorMessage.slice(0, 200)}`);
 
 		const retryable = resp.status === 429 || resp.status >= 500;
-		if (!retryable || attempt === maxAttempts) throw lastErr;
+		if (!retryable || attempt === maxAttempts) {
+			if (resp.status === 429 || isQuotaExhaustedBody) {
+				console.error(
+					"\n======================================================================",
+				);
+				console.error(
+					"🔴 CRITICAL GEMINI API ERROR: QUOTA EXHAUSTED AFTER RETRIES",
+				);
+				console.error(errorMessage);
+				console.error(
+					"======================================================================\n",
+				);
+				throw new Error("Quota Exhausted for this model");
+			}
+			throw lastErr;
+		}
 
-		const backoffMs = 5000 * attempt;
+		const retryAfterMs = parseRetryAfterMs(resp.headers);
+		const waitMs =
+			retryAfterMs !== null ? retryAfterMs : backoffBaseMs * attempt;
+
 		console.warn(
-			`    retry ${attempt}/${maxAttempts - 1} after ${backoffMs}ms (${resp.status})`,
+			`    retry ${attempt}/${maxAttempts - 1} after ${waitMs}ms (${resp.status})`,
 		);
-		await new Promise((r) => setTimeout(r, backoffMs));
+		await sleepImpl(waitMs);
 	}
 	throw lastErr;
 }
@@ -309,7 +460,7 @@ async function generateImage(apiKey, species, state, modelName) {
  * "Here's your highly detailed photorealistic illustration of …:" before the
  * actual description. Strip common preamble patterns; keep the rest.
  */
-function stripPreamble(text) {
+export function stripPreamble(text) {
 	const t = text.trim();
 	// Match openers up to the first colon-then-text or first sentence-final period.
 	const preambleColon =
@@ -317,22 +468,39 @@ function stripPreamble(text) {
 	return t.replace(preambleColon, "").trim();
 }
 
-async function run() {
-	const apiKey = process.env.GEMINI_API_KEY;
-	const dryRun = process.env.DRY_RUN === "1";
+export async function run(options = {}) {
+	const parsed = parseCliArgs(options.argv);
+	const targetDate = options.targetDate ?? parsed.targetDate;
+	const targetStates = options.targetStates ?? parsed.targetStates;
+	const missingOnly = options.missingOnly ?? parsed.missingOnly;
+	const usOnly = options.usOnly ?? parsed.usOnly;
+	const warehouseDir =
+		options.warehouseDir ??
+		parsed.warehouseDir ??
+		process.env.DAILY_WAREHOUSE_DIR ??
+		"";
+	const docsDir = options.docsDir ?? DOCS_DIR;
+	const speciesPath = options.speciesPath ?? SPECIES_PATH;
+	const apiKey = options.apiKey ?? process.env.GEMINI_API_KEY;
+	const dryRun = options.dryRun ?? process.env.DRY_RUN === "1";
+
+	if (!isValidIsoDate(targetDate)) {
+		console.error(
+			`Invalid targetDate "${targetDate}" (expected valid YYYY-MM-DD calendar date)`,
+		);
+		process.exitCode = 1;
+		return { ok: 0, skip: 0, fail: 0, failedStates: [] };
+	}
 
 	if (!apiKey && !dryRun) {
 		console.error("GEMINI_API_KEY is required (or set DRY_RUN=1)");
-		process.exit(1);
+		process.exitCode = 1;
+		return { ok: 0, skip: 0, fail: 0, failedStates: [] };
 	}
 
-	const allSpecies = JSON.parse(readFileSync(SPECIES_PATH, "utf8"));
-
-	let states = targetStates;
-	if (!states) {
-		const allKeys = Object.keys(allSpecies);
-		states = US_ONLY ? allKeys.filter((s) => US_STATES.has(s)) : allKeys;
-	}
+	const allSpecies = JSON.parse(readFileSync(speciesPath, "utf8"));
+	const states = selectTargetRegions(allSpecies, { targetStates, usOnly });
+	const resolvedDocsDir = resolve(docsDir);
 
 	console.log(
 		`Generating ${states.length} flowers for ${targetDate}` +
@@ -347,10 +515,41 @@ async function run() {
 	let index = 0;
 	async function worker() {
 		while (index < states.length) {
-			const state = states[index++];
+			const taskIdx = index++;
+			const state = states[taskIdx];
 			if (!state) continue;
 
-			const stateDir = join(DOCS_DIR, state);
+			const stateDir = resolve(resolvedDocsDir, state);
+			const relState = relative(resolvedDocsDir, stateDir);
+			const isConfined =
+				relState !== "" &&
+				!relState.startsWith("..") &&
+				!isAbsolute(relState) &&
+				!state.includes("/") &&
+				!state.includes("\\");
+
+			if (!isConfined) {
+				console.warn(
+					`  ${state}: invalid region path outside docsDir, skipping`,
+				);
+				fail++;
+				failedStates.push(state);
+				continue;
+			}
+
+			if (!Object.hasOwn(allSpecies, state)) {
+				console.warn(`  ${state}: unknown region, skipping`);
+				skip++;
+				continue;
+			}
+
+			const species = allSpecies[state];
+			if (!Array.isArray(species) || species.length === 0) {
+				console.warn(`  ${state}: no species data, skipping`);
+				skip++;
+				continue;
+			}
+
 			const imgPath = join(stateDir, `${targetDate}.${IMG_EXT}`);
 			const jsonPath = join(stateDir, `${targetDate}.json`);
 
@@ -377,35 +576,30 @@ async function run() {
 				continue;
 			}
 
-			const species = allSpecies[state];
-			if (!species) {
-				console.warn(`  ${state}: no species data, skipping`);
-				skip++;
-				continue;
-			}
-
-			const picked = pickSpecies(species, state, targetDate);
-			console.log(`  ${state}: ${picked.common} (${picked.latin})`);
-
 			try {
+				const picked = pickSpecies(species, state, targetDate);
+				console.log(`  ${state}: ${picked.common} (${picked.latin})`);
+
 				mkdirSync(stateDir, { recursive: true });
 
 				if (dryRun) {
+					const month = monthNameForDate(targetDate);
 					writeFileSync(imgPath, Buffer.alloc(0));
 					writeFileSync(
 						jsonPath,
 						JSON.stringify({
 							common: picked.common,
 							latin: picked.latin,
-							blurb: `${picked.common} blooming today.`,
+							blurb: `A ${picked.common} (${picked.latin}) blooming in ${month}.`,
 							generatedAt: new Date().toISOString(),
+							imageExt: IMG_EXT,
 						}),
 					);
 				} else {
 					// Round-robin start index, falling back to other models on failure
-					let _success = false;
 					for (let i = 0; i < GEMINI_MODELS.length; i++) {
-						const modelName = GEMINI_MODELS[(index + i) % GEMINI_MODELS.length];
+						const modelName =
+							GEMINI_MODELS[(taskIdx + i) % GEMINI_MODELS.length];
 						console.log(`  ${state}: Trying model ${modelName}`);
 						try {
 							const { imageData, blurb } = await generateImage(
@@ -413,6 +607,13 @@ async function run() {
 								picked,
 								state,
 								modelName,
+								targetDate,
+								{
+									fetchImpl: options.fetchImpl,
+									sleepImpl: options.sleepImpl,
+									backoffBaseMs: options.backoffBaseMs,
+									maxAttempts: options.maxAttempts,
+								},
 							);
 							writeFileSync(imgPath, Buffer.from(imageData, "base64"));
 							writeFileSync(
@@ -422,9 +623,9 @@ async function run() {
 									latin: picked.latin,
 									blurb,
 									generatedAt: new Date().toISOString(),
+									imageExt: IMG_EXT,
 								}),
 							);
-							_success = true;
 							break; // Success!
 						} catch (err) {
 							console.log(
@@ -450,7 +651,7 @@ async function run() {
 	);
 	await Promise.all(workers);
 
-	await archiveOldPngs();
+	await archiveOldPngs({ targetDate, docsDir, warehouseDir });
 
 	const costPerImage = 0.03;
 	const totalCost = dryRun ? 0 : ok * costPerImage;
@@ -474,64 +675,105 @@ async function run() {
 	if (!dryRun && fail > 0) {
 		process.exitCode = 1;
 	}
+
+	return { ok, skip, fail, failedStates };
 }
 
-const WAREHOUSE_DIR = "/Users/scottybe/workspace/shared/design-assets/daily";
+function updateSidecarToJpg(jsonPath) {
+	if (!existsSync(jsonPath)) return;
+	try {
+		const raw = readFileSync(jsonPath, "utf8");
+		const parsed = JSON.parse(raw);
+		if (parsed.imageExt !== "jpg") {
+			parsed.imageExt = "jpg";
+			writeFileSync(jsonPath, JSON.stringify(parsed));
+		}
+	} catch (err) {
+		console.error(`  Failed to update sidecar ${jsonPath}: ${err.message}`);
+	}
+}
 
-async function archiveOldPngs() {
+export async function archiveOldPngs({
+	targetDate = todayIso(),
+	docsDir = DOCS_DIR,
+	warehouseDir = process.env.DAILY_WAREHOUSE_DIR ?? "",
+} = {}) {
 	console.log(
-		"\nRunning rolling buffer cleanup (archiving PNGs older than 7 days)...",
+		"\nRunning rolling buffer cleanup (JPEG conversion at day 7, PNG removal at day 9)...",
 	);
-	const todayStr = targetDate;
-	const todayDate = new Date(`${todayStr}T12:00:00`);
 
+	if (!isValidIsoDate(targetDate)) {
+		console.warn(`Invalid targetDate "${targetDate}", skipping archiving.`);
+		return { convertedCount: 0, archivedCount: 0 };
+	}
+
+	const todayMs = new Date(`${targetDate}T00:00:00Z`).getTime();
+	if (Number.isNaN(todayMs)) {
+		return { convertedCount: 0, archivedCount: 0 };
+	}
+
+	let convertedCount = 0;
 	let archivedCount = 0;
 
-	if (!existsSync(DOCS_DIR)) return;
-	const states = readdirSync(DOCS_DIR);
-	for (const state of states) {
-		const statePath = join(DOCS_DIR, state);
-		if (!statSync(statePath).isDirectory()) continue;
+	if (!existsSync(docsDir)) return { convertedCount, archivedCount };
 
-		const files = readdirSync(statePath);
-		for (const file of files) {
+	const stateEntries = readdirSync(docsDir, { withFileTypes: true });
+	for (const stateEntry of stateEntries) {
+		if (!stateEntry.isDirectory()) continue;
+		const state = stateEntry.name;
+		const statePath = join(docsDir, state);
+
+		const fileEntries = readdirSync(statePath, { withFileTypes: true });
+		for (const fileEntry of fileEntries) {
+			if (!fileEntry.isFile()) continue;
+			const file = fileEntry.name;
 			if (!file.endsWith(".png")) continue;
 
-			const fileDateStr = file.replace(".png", "");
-			const fileDate = new Date(`${fileDateStr}T12:00:00`);
-			if (Number.isNaN(fileDate.getTime())) continue;
+			const fileDateStr = file.slice(0, -4);
+			if (!isValidIsoDate(fileDateStr)) continue;
 
-			const diffTime = todayDate.getTime() - fileDate.getTime();
-			const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+			const fileMs = new Date(`${fileDateStr}T00:00:00Z`).getTime();
+			if (Number.isNaN(fileMs)) continue;
 
-			if (diffDays >= 8) {
-				const pngPath = join(statePath, file);
-				const jpgPath = pngPath.replace(".png", ".jpg");
+			const diffDays = Math.floor((todayMs - fileMs) / 86_400_000);
+			const pngPath = join(statePath, file);
+			const jpgPath = join(statePath, `${fileDateStr}.jpg`);
+			const jsonPath = join(statePath, `${fileDateStr}.json`);
 
+			if (diffDays >= 7) {
 				try {
-					// 1. Convert to JPEG and save in doc site
 					const stat = statSync(pngPath);
-					if (stat.size > 0) {
-						const buffer = readFileSync(pngPath);
-						const image = await Jimp.read(buffer);
-						const jpgBuffer = await image.getBuffer(JimpMime.jpeg, {
-							quality: 85,
-						});
-						writeFileSync(jpgPath, jpgBuffer);
-					} else {
-						writeFileSync(jpgPath, Buffer.alloc(0));
+					const needsJpg =
+						!existsSync(jpgPath) ||
+						(stat.size > 0 && statSync(jpgPath).size === 0);
+
+					if (needsJpg) {
+						if (stat.size > 0) {
+							const buffer = readFileSync(pngPath);
+							const image = await Jimp.read(buffer);
+							const jpgBuffer = await image.getBuffer(JimpMime.jpeg, {
+								quality: 85,
+							});
+							writeFileSync(jpgPath, jpgBuffer);
+						} else {
+							writeFileSync(jpgPath, Buffer.alloc(0));
+						}
+						convertedCount++;
 					}
 
-					// 2. Backup high-res PNG to common warehouse (if accessible)
-					if (existsSync("/Users/scottybe/workspace/shared/design-assets")) {
-						const destPath = join(WAREHOUSE_DIR, state, file);
-						mkdirSync(dirname(destPath), { recursive: true });
-						copyFileSync(pngPath, destPath);
-					}
+					// Update sidecar imageExt to "jpg" while preserving all other fields
+					updateSidecarToJpg(jsonPath);
 
-					// 3. Delete the original PNG from active repository docs/daily/
-					unlinkSync(pngPath);
-					archivedCount++;
+					// Keep PNG across days 7 and 8 (2-day overlap window); retire only at day 9+
+					if (diffDays >= 9) {
+						if (warehouseDir && warehouseDir.trim() !== "") {
+							const destPath = join(warehouseDir, state, file);
+							mkdirSync(dirname(destPath), { recursive: true });
+							copyFileSync(pngPath, destPath);
+						}
+						unlinkSync(pngPath);
+						archivedCount++;
+					}
 				} catch (err) {
 					console.error(`  Failed to archive ${pngPath}: ${err.message}`);
 				}
@@ -539,11 +781,29 @@ async function archiveOldPngs() {
 		}
 	}
 
-	if (archivedCount > 0) {
-		console.log(`Successfully archived ${archivedCount} PNGs to JPEG.`);
+	if (convertedCount > 0 || archivedCount > 0) {
+		console.log(
+			`Archive pass complete: ${convertedCount} JPEG(s) generated, ${archivedCount} PNG(s) retired.`,
+		);
 	} else {
 		console.log("No older PNGs required archiving.");
 	}
+
+	return { convertedCount, archivedCount };
 }
 
-run();
+function isMainModule() {
+	if (!process.argv[1]) return false;
+	try {
+		return (
+			realpathSync(fileURLToPath(import.meta.url)) ===
+			realpathSync(resolve(process.argv[1]))
+		);
+	} catch {
+		return false;
+	}
+}
+
+if (isMainModule()) {
+	run();
+}

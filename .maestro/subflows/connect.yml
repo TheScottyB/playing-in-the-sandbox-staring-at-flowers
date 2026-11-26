@@ -1,16 +1,16 @@
-# Shared connection flow with auto-recovery for Expo Go discovery issues
-appId: host.exp.Exponent
+# Shared connection flow with auto-recovery for dev client Metro discovery
+appId: com.djscottyb.playinginthesandoxlookingatflowers
 ---
 - launchApp:
     clearState: false
 
 # Check if the local dev server is auto-discovered on screen.
-# If it is not visible, recover by opening the Expo deep link directly.
+# If it is not visible, recover by opening the app deep link directly.
 - runFlow:
     when:
       notVisible: "http://localhost:8081"
     commands:
-      - openLink: "exp://localhost:8081?disableOnboarding=1"
+      - openLink: "staring-at-flowers://?disableOnboarding=1"
       - tapOn:
           text: "Open"
           optional: true

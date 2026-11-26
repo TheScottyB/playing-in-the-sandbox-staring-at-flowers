@@ -1,13 +1,15 @@
 name: Publish OTA update
 
-# on:
-#   push:
-#     branches:
-#       - main
-#       - "preview/*"
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "**"
+      - "!docs/daily/**"
 
 jobs:
   publish_update:
     type: update
     params:
-      branch: ${{ github.ref_name || "production" }}
+      branch: ${{ github.ref_name == 'main' && 'production' || github.ref_name || 'production' }}
