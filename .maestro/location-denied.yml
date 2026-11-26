@@ -1,10 +1,10 @@
 # Geolocation Fallback Smoke Test: denies location access and verifies fallback/default region loads
-appId: host.exp.Exponent
+appId: com.djscottyb.playinginthesandoxlookingatflowers
 ---
 - launchApp:
     permissions:
       location: deny
-- openLink: "exp://localhost:8081"
+- openLink: "staring-at-flowers://"
 - extendedWaitUntil:
     visible: ".*TAP TO READ.*"
     timeout: 15000

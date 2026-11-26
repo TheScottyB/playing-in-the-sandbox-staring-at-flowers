@@ -1,6 +1,6 @@
 # Date navigation: tap Yesterday then Today to verify date browsing works.
 # Requires network access to GitHub Pages daily flower data.
-appId: host.exp.Exponent
+appId: com.djscottyb.playinginthesandoxlookingatflowers
 ---
 - runFlow: subflows/connect.yml
 

@@ -1,26 +1,35 @@
 #!/usr/bin/env node
-import { execSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	unlinkSync,
-	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
 const SPECIES_PATH = join(ROOT, "lib", "data", "species.json");
 const OUT_DIR = join(ROOT, "assets");
 const DB_PATH = join(OUT_DIR, "species.db");
-const TEMP_SQL = join(ROOT, "scratch", "species_dump.sql");
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
-const EMBEDDING_MODEL = "gemini-embedding-001"; // 768-dimension embedding model
+const EMBEDDING_MODEL = "gemini-embedding-001"; // 3072-dimension embedding model
+export const EMBEDDING_DIM = 3072;
+export const DB_VERSION = 2;
 
-const REGION_NAMES = {
+export class PermanentApiError extends Error {
+	constructor(message, status) {
+		super(message);
+		this.name = "PermanentApiError";
+		this.status = status;
+	}
+}
+
+export const REGION_NAMES = {
 	// Central/South America
 	GTM: "Guatemala",
 	BLZ: "Belize",
@@ -93,27 +102,70 @@ const REGION_NAMES = {
 	default: "Global Default fallback",
 };
 
-function getRegionName(code) {
+export function getRegionName(code) {
 	if (REGION_NAMES[code]) return REGION_NAMES[code];
 	return `${code} region, United States`;
 }
 
-function runCommand(cmd) {
-	try {
-		return execSync(cmd, { encoding: "utf-8", stdio: "pipe" }).trim();
-	} catch (e) {
-		console.error(`Command failed: ${cmd}\nError: ${e.message}`);
-		return null;
-	}
+function createDummyEmbedding() {
+	// Return dummy vector of unit length (3072-dimension)
+	const dummy = new Float32Array(EMBEDDING_DIM);
+	dummy[0] = 1.0; // unit length
+	return Array.from(dummy);
 }
 
-async function fetchEmbedding(apiKey, text) {
-	if (!apiKey) {
-		// Return dummy vector of unit length (768-dimension) if API key is missing
-		const dummy = new Float32Array(768);
-		dummy[0] = 1.0; // unit length
-		return Array.from(dummy);
+export function parseRetryAfterMs(headers) {
+	const raw = headers?.get?.("retry-after") ?? headers?.get?.("Retry-After");
+	if (typeof raw !== "string") return null;
+	const trimmed = raw.trim();
+	if (trimmed === "") return null;
+	const seconds = Number(trimmed);
+	if (Number.isFinite(seconds)) {
+		return seconds >= 0 ? Math.round(seconds * 1000) : null;
 	}
+	const dateMs = Date.parse(trimmed);
+	if (!Number.isNaN(dateMs)) {
+		return Math.max(0, dateMs - Date.now());
+	}
+	return null;
+}
+
+function isPermanentBillingOrAuthError(status, errorMessage, errorStatus) {
+	const lower = errorMessage.toLowerCase();
+	if (status === 401 || status === 403) return true;
+	if (
+		errorStatus === "PERMISSION_DENIED" ||
+		errorStatus === "UNAUTHENTICATED"
+	) {
+		return true;
+	}
+	if (
+		lower.includes("prepayment credits") ||
+		lower.includes("api key not valid") ||
+		lower.includes("invalid api key")
+	) {
+		return true;
+	}
+	if (
+		status !== 429 &&
+		errorStatus !== "RESOURCE_EXHAUSTED" &&
+		lower.includes("billing")
+	) {
+		return true;
+	}
+	return false;
+}
+
+export async function fetchEmbedding(apiKey, text, options = {}) {
+	if (!apiKey) {
+		return createDummyEmbedding();
+	}
+
+	const maxAttempts = options.maxAttempts ?? 4;
+	const baseDelayMs = options.baseDelayMs ?? 2000;
+	const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+	const sleepImpl =
+		options.sleepImpl ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
 
 	const url = `${GEMINI_BASE}/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
 	const body = {
@@ -121,10 +173,13 @@ async function fetchEmbedding(apiKey, text) {
 		content: { parts: [{ text }] },
 	};
 
-	const maxAttempts = 3;
+	let lastErrorMessage = "Unknown embedding error";
+
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		let retryAfterMs = null;
+		let nonRetryable4xx = false;
 		try {
-			const resp = await fetch(url, {
+			const resp = await fetchImpl(url, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(body),
@@ -132,7 +187,13 @@ async function fetchEmbedding(apiKey, text) {
 
 			if (resp.ok) {
 				const json = await resp.json();
-				return json.embedding.values;
+				const values = json?.embedding?.values;
+				if (!Array.isArray(values) || values.length !== EMBEDDING_DIM) {
+					throw new Error(
+						`Unexpected embedding dimensions: expected ${EMBEDDING_DIM}, got ${Array.isArray(values) ? values.length : "none"}`,
+					);
+				}
+				return values;
 			}
 
 			const textErr = await resp.text();
@@ -141,85 +202,73 @@ async function fetchEmbedding(apiKey, text) {
 				errorObj = JSON.parse(textErr);
 			} catch (_e) {}
 
-			const errorMessage = errorObj?.error?.message || textErr;
-			const isBillingOrQuota =
-				resp.status === 429 ||
-				errorMessage.includes("prepayment credits") ||
-				errorMessage.includes("RESOURCE_EXHAUSTED") ||
-				errorObj?.error?.status === "RESOURCE_EXHAUSTED";
+			const errorMessage = errorObj?.error?.message || textErr || "";
+			const errorStatus = errorObj?.error?.status || "";
+			lastErrorMessage = `HTTP ${resp.status}: ${errorMessage.slice(0, 150)}`;
 
-			if (isBillingOrQuota) {
-				console.error(
-					"\n======================================================================",
+			const isRateLimit =
+				resp.status === 429 || errorStatus === "RESOURCE_EXHAUSTED";
+			if (
+				isPermanentBillingOrAuthError(resp.status, errorMessage, errorStatus)
+			) {
+				throw new PermanentApiError(
+					errorMessage || `HTTP ${resp.status}`,
+					resp.status,
 				);
-				console.error(
-					"🔴 CRITICAL GEMINI API ERROR: BILLING OR QUOTA EXHAUSTED",
-				);
-				console.error(errorMessage);
-				console.error(
-					"======================================================================\n",
-				);
-				process.exit(1);
+			}
+
+			if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) {
+				nonRetryable4xx = true;
+			} else if (isRateLimit) {
+				retryAfterMs = parseRetryAfterMs(resp.headers);
 			}
 
 			console.warn(
-				`    Warning: Embedding API failed (HTTP ${resp.status}): ${errorMessage.slice(0, 150)}`,
+				`    Warning: Embedding API failed (${isRateLimit ? "rate limit " : ""}HTTP ${resp.status}, attempt ${attempt}/${maxAttempts}): ${errorMessage.slice(0, 150)}`,
 			);
 		} catch (e) {
+			if (e instanceof PermanentApiError) {
+				throw e;
+			}
+			lastErrorMessage = e.message;
 			console.warn(
-				`    Warning: Network failure on embedding fetch: ${e.message}`,
+				`    Warning: Network/embedding failure (attempt ${attempt}/${maxAttempts}): ${e.message}`,
 			);
+		}
+
+		if (nonRetryable4xx) {
+			break;
 		}
 
 		if (attempt < maxAttempts) {
-			const waitMs = 2000 * attempt;
-			await new Promise((r) => setTimeout(r, waitMs));
+			const waitMs =
+				retryAfterMs !== null ? retryAfterMs : baseDelayMs * 2 ** (attempt - 1);
+			if (waitMs > 0) {
+				await sleepImpl(waitMs);
+			}
 		}
 	}
 
-	throw new Error(`Failed to fetch embedding for: "${text.slice(0, 50)}..."`);
+	throw new Error(
+		`Failed to fetch embedding for "${text.slice(0, 50)}..." (${lastErrorMessage})`,
+	);
 }
 
-function escapeSql(str) {
-	if (!str) return "";
-	return str.replace(/'/g, "''");
-}
-
-async function main() {
+export async function main() {
 	const apiKey = process.env.GEMINI_API_KEY;
 	if (!apiKey) {
 		console.warn(
-			"⚠️ GEMINI_API_KEY is not set. Generating mock embeddings for offline testing.",
+			"⚠️ GEMINI_API_KEY is not set. Generating 3072-dim mock embeddings for offline testing.",
 		);
 	}
 
 	console.log(`Reading species from ${SPECIES_PATH}...`);
 	const speciesData = JSON.parse(readFileSync(SPECIES_PATH, "utf8"));
 
-	// Ensure assets and scratch dirs exist
 	mkdirSync(OUT_DIR, { recursive: true });
-	mkdirSync(dirname(TEMP_SQL), { recursive: true });
-
-	const sqlStatements = [];
-
-	// Base Schema
-	sqlStatements.push("PRAGMA foreign_keys = ON;");
-	sqlStatements.push("DROP TABLE IF EXISTS species;");
-	sqlStatements.push(`
-    CREATE TABLE species (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      region TEXT NOT NULL,
-      common TEXT NOT NULL,
-      latin TEXT NOT NULL,
-      bloom_months TEXT NOT NULL,
-      blurb TEXT NOT NULL,
-      embedding BLOB NOT NULL
-    );
-  `);
-	sqlStatements.push("CREATE INDEX idx_species_region ON species(region);");
 
 	const regions = Object.keys(speciesData);
-	let totalProcessed = 0;
+	const rowsToInsert = [];
 
 	for (const region of regions) {
 		const list = speciesData[region];
@@ -229,78 +278,130 @@ async function main() {
 		);
 
 		for (const species of list) {
-			const textToEmbed = `${species.common} (${species.latin}). Native to ${regionName}. ${species.blurb}`;
+			const blurb = species.blurb ?? "";
+			const textToEmbed = `${species.common} (${species.latin}). Native to ${regionName}. ${blurb}`;
 
 			let embedding;
 			try {
 				embedding = await fetchEmbedding(apiKey, textToEmbed);
 			} catch (e) {
+				if (e instanceof PermanentApiError) {
+					console.error(
+						"\n======================================================================",
+					);
+					console.error(
+						"🔴 CRITICAL GEMINI API ERROR: BILLING OR AUTHENTICATION FAILED",
+					);
+					console.error(e.message);
+					console.error(
+						"======================================================================\n",
+					);
+					process.exit(1);
+				}
 				console.error(
 					`Failed to embed ${species.common} in ${region}: ${e.message}. Falling back to mock vector.`,
 				);
-				const dummy = new Float32Array(768);
-				dummy[0] = 1.0;
-				embedding = Array.from(dummy);
+				embedding = createDummyEmbedding();
 			}
 
-			// Convert float array to Float32Array buffer, then to hex string
 			const floatArr = new Float32Array(embedding);
-			const hexString = Buffer.from(floatArr.buffer).toString("hex");
-			const bloomMonthsJson = JSON.stringify(species.bloomMonths);
+			const embeddingBlob = Buffer.from(
+				floatArr.buffer,
+				floatArr.byteOffset,
+				floatArr.byteLength,
+			);
+			rowsToInsert.push({
+				region,
+				common: species.common,
+				latin: species.latin,
+				bloomMonthsJson: JSON.stringify(species.bloomMonths),
+				blurb,
+				embeddingBlob,
+			});
 
-			sqlStatements.push(`
-        INSERT INTO species (region, common, latin, bloom_months, blurb, embedding)
-        VALUES (
-          '${escapeSql(region)}',
-          '${escapeSql(species.common)}',
-          '${escapeSql(species.latin)}',
-          '${escapeSql(bloomMonthsJson)}',
-          '${escapeSql(species.blurb)}',
-          x'${hexString}'
-        );
-      `);
-
-			totalProcessed++;
-
-			// Sleep briefly to avoid hammering rate limit if calling live API
 			if (apiKey) {
 				await new Promise((r) => setTimeout(r, 100)); // 100ms throttle
 			}
 		}
 	}
 
-	// Write SQL dump file
-	console.log(`Writing SQL dump to ${TEMP_SQL}...`);
-	writeFileSync(TEMP_SQL, sqlStatements.join("\n"), "utf8");
-
-	// Compile database using sqlite3 CLI
-	console.log(
-		`Compiling SQLite database at ${DB_PATH} using system sqlite3 CLI...`,
-	);
-	if (existsSync(DB_PATH)) {
-		unlinkSync(DB_PATH);
+	console.log(`Compiling SQLite database at ${DB_PATH} using node:sqlite...`);
+	for (const candidate of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
+		if (existsSync(candidate)) {
+			unlinkSync(candidate);
+		}
 	}
 
-	const buildResult = runCommand(`sqlite3 "${DB_PATH}" < "${TEMP_SQL}"`);
-	if (buildResult !== null) {
-		console.log(`✅ SQLite compilation successful!`);
+	const db = new DatabaseSync(DB_PATH);
+	try {
+		db.exec("PRAGMA foreign_keys = ON;");
+		db.exec(`
+			CREATE TABLE species (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				region TEXT NOT NULL,
+				common TEXT NOT NULL,
+				latin TEXT NOT NULL,
+				bloom_months TEXT NOT NULL,
+				blurb TEXT NOT NULL,
+				embedding BLOB NOT NULL
+			);
+			CREATE INDEX idx_species_region ON species(region);
+		`);
+
+		const insertStmt = db.prepare(
+			"INSERT INTO species (region, common, latin, bloom_months, blurb, embedding) VALUES (?, ?, ?, ?, ?, ?);",
+		);
+
+		db.exec("BEGIN;");
+		try {
+			for (const row of rowsToInsert) {
+				insertStmt.run(
+					row.region,
+					row.common,
+					row.latin,
+					row.bloomMonthsJson,
+					row.blurb,
+					row.embeddingBlob,
+				);
+			}
+			db.exec("COMMIT;");
+		} catch (txErr) {
+			db.exec("ROLLBACK;");
+			throw txErr;
+		}
+
+		db.exec(`
+			CREATE VIRTUAL TABLE IF NOT EXISTS species_fts USING fts5(
+				region,
+				common,
+				latin,
+				blurb,
+				content='species',
+				content_rowid='id',
+				tokenize='porter unicode61'
+			);
+			INSERT INTO species_fts(species_fts) VALUES('rebuild');
+			PRAGMA user_version = ${DB_VERSION};
+		`);
+
+		const countRow = db.prepare("SELECT count(*) AS count FROM species;").get();
+		console.log("✅ SQLite compilation successful!");
 		console.log(
-			`Summary: Processed ${totalProcessed} species across ${regions.length} regions.`,
+			`Summary: Processed ${rowsToInsert.length} species across ${regions.length} regions.`,
 		);
-
-		// Verify by reading row count
-		const rows = runCommand(
-			`sqlite3 "${DB_PATH}" "SELECT count(*) FROM species;"`,
-		);
-		console.log(`Verified database row count: ${rows}`);
-	} else {
-		console.error("❌ SQLite compilation failed.");
-	}
-
-	// Cleanup
-	if (existsSync(TEMP_SQL)) {
-		unlinkSync(TEMP_SQL);
+		console.log(`Verified database row count: ${countRow.count}`);
+	} finally {
+		db.close();
 	}
 }
 
-main().catch(console.error);
+const isEntrypoint = process.argv[1]
+	? import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+	: false;
+
+if (isEntrypoint) {
+	main().catch((err) => {
+		console.error("❌ SQLite compilation failed:", err);
+		process.exit(1);
+	});
+}

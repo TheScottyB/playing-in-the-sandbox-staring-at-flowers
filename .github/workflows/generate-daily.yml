@@ -7,13 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: 'Date to generate (YYYY-MM-DD, default: today)'
+        description: 'Date to generate (YYYY-MM-DD, default: today UTC)'
         required: false
       states:
-        description: 'Comma-separated state codes to regenerate (default: all)'
+        description: 'Comma-separated region codes to regenerate (default: all)'
         required: false
       missing_only:
-        description: 'Skip states that already have valid files for the date'
+        description: 'Skip regions that already have valid files for the date'
         required: false
         default: false
         type: boolean
@@ -40,11 +40,11 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: '11.2.2'
 
       - uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version: '22.18.0'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -59,23 +59,29 @@ jobs:
           INPUT_STATES: ${{ inputs.states }}
           INPUT_MISSING_ONLY: ${{ inputs.missing_only }}
         run: |
-          ARGS=""
+          ARGS=()
           if [ -n "$INPUT_DATE" ]; then
-            ARGS="$ARGS --date $INPUT_DATE"
+            ARGS+=(--date "$INPUT_DATE")
           fi
           if [ -n "$INPUT_STATES" ]; then
-            ARGS="$ARGS --states $INPUT_STATES"
+            ARGS+=(--states "$INPUT_STATES")
           fi
           if [ "$INPUT_MISSING_ONLY" = "true" ]; then
-            ARGS="$ARGS --missing-only"
+            ARGS+=(--missing-only)
           fi
           set -o pipefail
           GEN_STATUS=0
-          node scripts/generate-daily.mjs $ARGS 2>&1 | tee generate.log || GEN_STATUS=$?
+          node scripts/generate-daily.mjs "${ARGS[@]}" 2>&1 | tee generate.log || GEN_STATUS=$?
           echo "log<<GENEOF" >> "$GITHUB_OUTPUT"
           tail -5 generate.log >> "$GITHUB_OUTPUT"
           echo "GENEOF" >> "$GITHUB_OUTPUT"
           exit $GEN_STATUS
+
+      - name: Refresh archive manifest
+        # The app falls back to this archive index whenever a day's image is
+        # missing, so it must stay current even when generation fails.
+        if: always() && steps.gen.outcome != 'skipped'
+        run: node scripts/build-daily-manifest.mjs
 
       - name: Commit and push
         # Run even when generation failed so partial results still land;

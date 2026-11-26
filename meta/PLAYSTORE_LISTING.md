@@ -14,15 +14,15 @@ Length limit: 30 characters
 ```
 Specimen Sandbox
 ```
-(15 chars)
+(16 chars)
 
 ### Short description
 Length limit: 80 characters
 
 ```
-A new native flower every morning, picked for your state and the season.
+A new native flower every morning, picked for your region and the season.
 ```
-(72 chars)
+(73 chars)
 
 ### Full description
 Length limit: 4000 characters
@@ -30,51 +30,41 @@ Length limit: 4000 characters
 ```
 Wake up to a fresh AI-generated picture of a flower blooming near you today.
 
-Every morning, Specimen Sandbox picks a native species for your US state and
+Every morning, Specimen Sandbox picks a native species for your region and
 the current month, then delivers a new image with a botanical blurb. One tap
-takes you to yesterday's flower, or any day from the last week. That's it —
-no scrolling feed, no ads, no streaks, no notifications.
+takes you to yesterday's flower, or explore the 7-day archive, offline species
+search, and Travel Mode across 112 supported regions.
 
 A daily ritual, not a habit loop.
 
 WHAT YOU GET EACH DAY
 • A photorealistic image of a wildflower, garden flower, or shrub bloom
-  native to your state, generated fresh every day
+  native to your region, generated fresh every day
 • Common name and Latin name
 • A one-sentence note on the flower's appearance or ecological role
-• A "← Yesterday" button to see what was published any day this week
+• 100% offline botanical search across 396 native species (SQLite FTS5/BM25)
+• Optional Premium Pass ($4.99/mo, $29.99/yr, or $99.99 Founders Lifetime VIP)
+  unlocking unlimited offline search, the full 7-day archive, and Travel Mode
 
 HOW IT WORKS
-• On first launch, the app asks for your location once and resolves it to a
-  US state code (e.g. CA, NY). That code is stored only on your device.
-• Each night at 4 AM Pacific, our generator picks an in-season native
-  species for every state and creates a new image using Google Gemini.
-• The app fetches today's image for your state from a static CDN. No
-  account, no profile, no server-side history of you.
-• If you deny location, or you're outside the US, you'll see a flower
-  from a curated default collection.
+• On first launch, the app asks for your location once and resolves it locally
+  to a region code (e.g. CA, CA-ON, MX-MEX). That code is stored only on your
+  device.
+• Each day, our server-side generator picks an in-season native species for
+  supported regions and creates a new image using Google Gemini.
+• The app fetches today's image for your region from a static GitHub Pages CDN.
+  No account, no profile, no server-side history of you.
+• If you deny location, you'll see a flower from the curated default bucket.
 
 PRIVACY FIRST
 • Location is requested ONCE on first launch and resolved on-device to a
-  state code. Your coordinates never leave your phone.
+  region code. Your coordinates never leave your phone.
+• Offline botanical search runs 100% on-device via SQLite — search queries
+  never leave your phone.
 • No analytics. No ad SDKs. No third-party trackers.
-• No account, no login, no email.
-• You can clear the cached region at any time from the in-app menu — the
-  app will re-prompt you on next launch.
-
-NATIVE SPECIES, BLOOMING NOW
-The species pool is curated for each state and tagged with bloom months,
-so you'll see California Poppies in spring, Goldenrod in late summer,
-Witch Hazel in winter. Every flower shown actually grows wild somewhere
-near you, in season.
-
-NO FEED, NO HOOKS
-We deliberately don't show you a stream, a streak counter, or a
-"see all 47 flowers you've missed" upsell. One picture, once a day. If
-you forget for a week, you can scroll back six days, and that's it.
-Then close the app and go outside.
+• Optional In-App Purchases are handled directly by Google Play Billing and
+  synced anonymously via RevenueCat.
 ```
-(1846 chars — well under the 4000 limit)
 
 ### App icon
 Length: 512×512 PNG, 32-bit (with alpha)
@@ -127,7 +117,7 @@ the appropriate canvas. If skipping, mark "phone only" in Distribution.
 | Application type | App |
 | Category | Lifestyle |
 | Tags | Lifestyle / Nature & outdoors |
-| Email | beilsco@gmail.com |
+| Email | Configured privately in Play Console; public support via https://github.com/TheScottyB/playing-in-the-sandbox-staring-at-flowers/issues |
 | Phone (optional) | leave blank |
 | Website (optional) | https://github.com/TheScottyB/playing-in-the-sandbox-staring-at-flowers |
 | Privacy policy URL | https://thescottyb.github.io/playing-in-the-sandbox-staring-at-flowers/privacy.html |
@@ -147,10 +137,9 @@ https://thescottyb.github.io/playing-in-the-sandbox-staring-at-flowers/privacy.h
 
 > "Is all functionality of your app available without any access restrictions?"
 
-**Answer: Yes**
+**Answer: Yes (for core free daily flower & limited offline search); optional Premium Pass IAP unlocks unlimited offline search, 7-day archive, and Travel Mode**
 
-No login. No paywall. No region-gating beyond the visible "default" fallback
-for non-US users.
+No login or account required. No region-gating beyond the `default` fallback when location permission is denied or outside a named bucket.
 
 ---
 
@@ -160,8 +149,7 @@ for non-US users.
 
 **Answer: No**
 
-The app makes only one outbound HTTPS call (to GitHub Pages for the daily
-sidecar JSON + image). No SDKs that could serve ads.
+The app makes outbound HTTPS calls only to GitHub Pages (daily sidecar JSON + image) and RevenueCat / Google Play Billing for optional In-App Purchases. No ad SDKs or trackers.
 
 ---
 
@@ -177,7 +165,7 @@ Walk through the questionnaire with these answers:
 | Language | Profanity, crude humor? | **No** |
 | Controlled substances | References to drugs, alcohol, tobacco? | **No** |
 | Gambling | Real or simulated gambling? | **No** |
-| User-generated content | Does the app feature user-generated content, content sharing, social interaction, location sharing, personal info sharing, IAP, or unrestricted internet access? | **No** to all six |
+| User-generated content | Does the app feature user-generated content, content sharing, social interaction, location sharing, personal info sharing, IAP, or unrestricted internet access? | **Yes** for **IAP** (optional Premium Pass via Google Play Billing); **No** to the other five |
 | Miscellaneous | Anything else parents/users should know? | **No** |
 
 **Expected rating:** Everyone (IARC Generic 3+).
@@ -224,15 +212,16 @@ This is the most scrutinized section. The full answer set:
 |---|---|
 | Does your app collect or share any of the required user data types? | **Yes** |
 | Is all of the user data collected by your app encrypted in transit? | **Yes** (HTTPS only — fetch to GitHub Pages CDN) |
-| Do you provide a way for users to request that their data be deleted? | **Yes** (in-app "Change region" + uninstalling clears all local data) |
+| Do you provide a way for users to request that their data be deleted? | **Yes** (in-app "Update location" + uninstalling clears all local data) |
 
 ### Data types — what we collect
 
-Only **one** data type is touched, and never transmitted off-device:
+Only **two** data types are touched (coarse location stays strictly on-device; optional IAP tokens are verified anonymously via Google Play Billing and RevenueCat):
 
 | Data type | Collected? | Shared? | Optional? | Purpose | Why |
 |---|---|---|---|---|---|
-| **Approximate location** | Yes | **No** | Yes (denying falls back to default) | App functionality, Personalization | Resolves once on first launch via `expo-location` `Accuracy.Lowest`, reverse-geocodes to a US state code, caches the code locally. Coordinates never leave the device. |
+| **Approximate location** | Yes | **No** | Yes (denying falls back to default) | App functionality, Personalization | Resolves once on first launch via `expo-location` `Accuracy.Lowest`, reverse-geocodes on-device to a region code (112 supported regions), caches the code locally. Coordinates never leave the device. |
+| **Purchase history** | Yes (via Google Play Billing & RevenueCat) | **No** (processed for entitlement sync only) | Yes (only if user purchases Premium Pass) | App functionality | Anonymous app user ID and Google Play purchase token verified via RevenueCat solely to unlock/restore Premium Pass entitlements. |
 
 > Important: Mark "approximate" not "precise". The app uses
 > `Accuracy.Lowest` which on iOS 14+ skips the precise-location prompt
@@ -261,10 +250,7 @@ Tick **none** for every other category in the questionnaire:
 
 **Answer: No.**
 
-No SDKs that send data anywhere. The single outbound HTTPS call fetches a
-publicly-cached image and JSON; the GH Pages CDN sees only IP + UA, which
-is unavoidable for any HTTP fetch and not classified as "tracking" by
-Google's rules (no joining across services, no advertising ID).
+No analytics or ad SDKs. Outbound HTTPS calls are strictly limited to fetching publicly cached daily flower assets from GitHub Pages CDN and verifying optional Google Play Billing entitlements anonymously via RevenueCat (not classified as tracking under Google's rules).
 
 ### Security practices declaration
 
@@ -297,21 +283,13 @@ Google's rules (no joining across services, no advertising ID).
 
 ## Pricing & distribution → Countries / regions
 
-For v1: **United States only.** The species data is US-state-native;
-non-US users would only ever see the `default` bucket, which is a
-degraded experience.
-
-To gate to US in Play Console: Distribution → Countries → uncheck "All
-countries" → tick only "United States".
-
-(In a later version, expand to Canada once `data/species.json` adds
-provincial buckets.)
+Supports **112 regions** (US states, Canadian provinces, MX, CN, RU, BR, IS, European/African/Latin American regional buckets, plus `default` fallback), so distribution can be enabled for supported countries/regions or worldwide with graceful `default` fallback.
 
 ---
 
 ## Pricing & distribution → Pricing
 
-**Free.** Confirm "I confirm that I want to make this app free."
+**Free** (with optional In-App Purchases: Premium Monthly `$4.99`, Premium Annual `$29.99`, Founders Lifetime VIP `$99.99`).
 
 ---
 
@@ -351,10 +329,9 @@ Recommended ladder:
 
 ## What the maintainer still has to do
 
-- [ ] **Backfill the daily flowers** (49 missing states + `default` bucket)
-  — Actions → Generate Daily Flowers → Run workflow with no inputs.
-  Defaults to today's date, all states, heal mode. Takes ~6 minutes if no
-  rate limits hit.
+- [ ] **Backfill the daily flowers** (all 112 regions including US states, CA provinces, international buckets, and `default`)
+  — Actions → Generate Daily Flowers → Run workflow with `missing_only: true`.
+  Defaults to today's date and all configured regions.
 - [ ] **Capture Android screenshots** against the new daily-flower UI
   (see `meta/SCREENSHOTS.md` § Android — `adb shell screencap` on an
   emulator running the dev build)

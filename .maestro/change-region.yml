@@ -7,7 +7,7 @@
 #   2. Tapping it triggers a re-fetch (loading → success round-trip)
 #   3. dayOffset is reset to 0 — if we were on yesterday before the tap,
 #      we're back on today after (no "Today →" button)
-appId: host.exp.Exponent
+appId: com.djscottyb.playinginthesandoxlookingatflowers
 ---
 - runFlow: subflows/connect.yml
 

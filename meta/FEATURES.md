@@ -1,6 +1,6 @@
 # Specimen Sandbox: UX Features & Architecture
 
-This document describes the design, implementation, and UX flow for the core interactive features of the **Specimen Sandbox** application: **Yesterday's Flower**, **Update Location**, and **Vector Vibe Search**.
+This document describes the design, implementation, and UX flow for the core interactive features of the **Specimen Sandbox** application: **Yesterday's Flower**, **Update Location**, **Offline Botanical Search**, and **Travel Mode**.
 
 ---
 
@@ -65,54 +65,48 @@ graph TD
 
 ---
 
-## 3. Vector Vibe Search UX
+## 3. Offline Botanical Search UX
 
 ### User Flow
 * **Access**: The user taps the `🔍 SEARCH` button in the top-right corner of the top bar row.
-* **Search Input**: Opens a beautiful modal overlay with a text input. Users can type natural language descriptions of visual or aesthetic vibes (e.g. *"purple spring poppy"*, *"desert cactus"*, *"yellow autumn bloom"*).
-* **Query Execution**: Tapping "Search" sends the text query to the backend logic.
-* **Results**: Shows a list of matching species with their similarity percentages (e.g. *"95% match"*).
-* **Navigation**: Tapping a result redirects the user to the full-screen details view (`/flower-detail`) for that species.
+* **Search Input**: Opens a modal overlay with a text input. Users can search by common name, Latin name, region, season, or botanical traits (e.g. *"purple spring poppy"*, *"desert cactus"*, *"yellow autumn bloom"*).
+* **Query Execution**: Executes **100% offline on-device** with zero outbound network requests or client-side API keys.
+* **Results**: Shows matching species ranked by relevance score across the 396-species / 112-region catalog.
+* **Navigation**: Tapping a result opens the species details view (`/flower-detail`) displaying botanical metadata and specimen imagery.
 
 ### Architectural Flow
 ```mermaid
 sequenceDiagram
     participant User as Search Input
     participant UI as Search Modal
-    participant API as Gemini Embeddings API
-    participant DB as SQLite (expo-sqlite)
+    participant DB as SQLite FTS5/BM25 (expo-sqlite)
+    participant Web as In-Memory Species Catalog (Web fallback)
 
     User->>UI: Enters "purple spring poppy" + Taps Search
-    UI->>API: Fetch embedding values (gemini-embedding-001)
-    alt API Success
-        API-->>UI: Returns float[768] vector
-        UI->>DB: Query matches using embedding
-        alt sqlite-vec JSI Available
-            DB-->>UI: MATCH virtual table + cosine distance
-        else JSI Unavailable (fallback)
-            DB-->>UI: JS scan of all species embeddings (dot-product)
-        end
-    else API Offline / Failure
-        UI->>DB: Fallback to SQL Textual LIKE Search
-        DB-->>UI: Return wildcard text matches
+    alt Native (iOS / Android)
+        UI->>DB: Query FTS5 virtual table (BM25) + tokenized/prefix/vibe matching
+        DB-->>UI: Return ranked SpeciesRecord[] from 396-species DB
+    else Web / No DocumentDirectory
+        UI->>Web: In-memory tokenized/prefix/vibe scoring over species.json
+        Web-->>UI: Return ranked SpeciesRecord[]
     end
-    UI-->>User: Render results sorted by similarity %
+    UI-->>User: Render results sorted by match score
 ```
 
-### Under-the-Hood Optimizations
-* **Hybrid Search Engine**:
-  * **Native Path**: On built native devices/simulators, the app utilizes native `sqlite-vec` JSI bindings to run high-performance vector queries.
-  * **JS Fallback**: On sandbox/Expo Go setups where native binaries are locked out, the app automatically switches to an optimized pure JavaScript dot-product scan. Since vectors are normalized, this is a simple linear dot-product loop completing in **< 1.5ms** for 150+ species.
-  * **Text Fallback**: If the device is completely offline and cannot retrieve the embedding vector from Gemini, it falls back to a standard SQL `LIKE` textual query across species common names, latin names, blurbs, and regions.
+### Under-the-Hood Architecture
+* **100% Offline Search Engine (Zero Client API Key)**:
+  * **Native Path (`expo-sqlite`)**: Queries the precompiled `assets/species.db` (396 species across 112 regions) locally via **SQLite FTS5/BM25** full-text ranking paired with tokenized, prefix, and botanical trait/vibe keyword matching. No client-side Gemini API key or remote Gemini Embeddings calls exist in the mobile client.
+  * **Web Fallback**: When running on Web (`Platform.OS === "web"` or without `FileSystem.documentDirectory`), queries execute against the bundled `lib/data/species.json` dataset in memory using the same tokenized/prefix/vibe scoring.
+  * **DB Versioning & Concurrency Lock**: `initSpeciesDb()` uses a singleton `dbInitPromise` lock and checks bundled `DB_VERSION` so production app upgrades cleanly refresh `species.db`.
 
 ---
 
-## 4. Developer Override Menu UX
+## 4. Travel Mode & Dev Diagnostics UX
 
 ### User Flow
-* **Access**: Hidden from normal users. A developer or tester taps the top-left eyebrow text (`YOUR AREA · DATE`) **5 times**.
-* **Interface**: Opens the **Dev Controls** modal overlay.
+* **Travel Mode (Premium Pass)**: Subscribers and Lifetime VIP pass holders can open Travel Mode to explore native flowers across other supported regions locally without changing device GPS permissions.
+* **Developer Diagnostics (`__DEV__` Only)**: In development builds (`__DEV__`), tapping the top-left eyebrow text 5 times opens developer diagnostics; in production builds, this diagnostic menu is gated off so Travel Mode remains properly protected by the Premium Pass paywall.
 * **Features**:
-  * **Quick Select Chips**: Instant buttons to override the location to common test regions (e.g., `System` (real location), `Default`, `MX`, `IS`, `RU`, `CN`, `CA-ON`, `CA`).
-  * **Custom Region Input**: Text input to type any customized ISO region code (e.g., `WY`, `AL`, `CA-QC`).
-  * **Behavior**: Applying an override immediately resets the day offset, forces `HomeScreen` to re-fetch today's flower for the overridden region, and updates the card UI.
+  * **Quick Select Chips**: Instant buttons to preview supported regions (e.g., `System` (real location), `Default`, `MX-MEX`, `IS`, `RU-MOW`, `CN-BJ`, `CA-ON`, `CA`).
+  * **Custom Region Input**: Text input to enter any supported region code (e.g., `WY`, `AL`, `CA-QC`, `EU-WEST`).
+  * **Behavior**: Applying a region override resets the day offset, loads today's flower for the selected region (with `"default"` CDN and offline DB fallbacks), and updates the card UI.

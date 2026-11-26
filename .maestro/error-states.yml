@@ -4,7 +4,7 @@
 # The new UI falls through to getDefaultFlower() for service/network errors,
 # so only 404 ("Coming soon") shows the error card. Service and network errors
 # show the default flower with an "OFFLINE · ARCHIVE" badge instead.
-appId: host.exp.Exponent
+appId: com.djscottyb.playinginthesandoxlookingatflowers
 ---
 - runFlow: subflows/connect.yml
 
@@ -28,6 +28,6 @@ appId: host.exp.Exponent
 # If the offline fallback is shown, verify the badge is present
 - runFlow:
     when:
-      visible: "OFFLINE"
+      visible: ".*OFFLINE.*"
     commands:
-      - assertVisible: "OFFLINE"
+      - assertVisible: ".*OFFLINE.*"

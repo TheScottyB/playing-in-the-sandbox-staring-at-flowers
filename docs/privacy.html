@@ -61,30 +61,31 @@
 <body>
     <div class="container">
         <h1>Privacy Policy for Specimen Sandbox</h1>
-        <p class="last-updated"><strong>Last Updated:</strong> April 25, 2025</p>
+        <p class="last-updated"><strong>Last Updated:</strong> November 26, 2026</p>
 
         <h2>Introduction</h2>
         <p>This Privacy Policy explains how Specimen Sandbox ("we", "our", or "us") handles information when you use our mobile application ("App"). We respect your privacy and are committed to protecting it through our compliance with this policy.</p>
 
         <h2>Location Data</h2>
-        <p>The app requests your device's approximate location <strong>once</strong> — the first time you open it — in order to determine your US state, Canadian province, or country. This is used solely to select flowers native to your region. The resolved region code (e.g., "CA", "CA-ON", or "MX") is stored on your device only and is never transmitted to us or any third party. You can reset this at any time by clearing the app's local storage.</p>
+        <p>The app requests your device's approximate location <strong>once</strong> — the first time you open it — in order to determine your US state, Canadian province, or supported country/region. This is used solely to select flowers native to your region. The resolved region code (e.g., "CA", "CA-ON", or "MX-MEX") is stored on your device only and is never transmitted to us or any third party. You can reset this at any time by clearing the app's local storage or using the in-app "Update location" control. Travel Mode also allows you to browse other supported regions locally on your device without transmitting location data.</p>
 
         <h2>Data Collection and Usage</h2>
-        <p>Beyond the one-time region lookup described above, the app operates with a strict "no data collection" philosophy:</p>
+        <p>Beyond the one-time local region lookup described above, the app operates with a strict privacy-first design:</p>
         <ul>
             <li>We do not collect personal information</li>
             <li>We do not track your usage</li>
             <li>We do not store any information on remote servers</li>
             <li>We do not use analytics services</li>
             <li>We do not serve advertisements</li>
+            <li><strong>100% Offline Species Search:</strong> In-app botanical search runs completely offline on your device against a bundled SQLite database (using SQLite FTS5/BM25 and local keyword matching). Your search queries never leave your device and are never sent to Google Gemini or any external server.</li>
         </ul>
 
         <h2>Local Device Storage</h2>
-        <p>Your resolved region (US state, Canadian province, or country code) is stored locally on your device using AsyncStorage. This data never leaves your device and is not accessible to us or any third parties.</p>
+        <p>The app stores limited non-personal state locally on your device using <code>AsyncStorage</code> (your resolved or Travel Mode region code, cached daily flower metadata/image reference, and daily free search quota state) and reads the bundled, read-only species catalog locally via <code>expo-sqlite</code>. This data never leaves your device and is not accessible to us or any third parties.</p>
 
         <h2>Third-Party Services and In-App Purchases</h2>
-        <p>Daily flower images and descriptions are fetched from GitHub Pages (a static CDN). No identifying information is included in these requests beyond a standard HTTP request.</p>
-        <p>For processing and managing in-app purchases and subscriptions, we use <strong>RevenueCat</strong> and Apple App Store billing services. These services process transaction records and subscription states securely. Specimen Sandbox does not collect, store, or transmit your credit card details, billing address, or personal identifiers related to transactions. All purchase processing is handled directly by Apple and synced anonymously through RevenueCat.</p>
+        <p>Daily flower images and descriptions are pre-generated server-side and fetched from GitHub Pages (a static CDN). No personal or account identifiers are included in these requests beyond standard HTTPS transport.</p>
+        <p>For processing and managing optional in-app purchases and subscriptions, we use <strong>RevenueCat</strong>, <strong>Apple App Store</strong>, and <strong>Google Play Billing</strong> services. These services process transaction records and subscription entitlements securely. Specimen Sandbox does not collect, store, or transmit your credit card details, billing address, or personal billing information. All purchase processing is handled directly by Apple App Store or Google Play Billing and synced anonymously through RevenueCat using an anonymous app user ID and store purchase receipt/token solely to verify Premium Pass entitlements.</p>
 
         <h2>Children's Privacy</h2>
         <p>Our application is suitable for all ages and does not collect personal information from anyone, including children under the age of 13.</p>
@@ -96,7 +97,7 @@
         <p>If you have any questions about this Privacy Policy, please contact us through the GitHub Issues page for this project.</p>
 
         <h2>Effective Date</h2>
-        <p>This policy is effective as of April 10, 2025.</p>
+        <p>This policy is effective as of November 26, 2026.</p>
     </div>
 </body>
 </html>

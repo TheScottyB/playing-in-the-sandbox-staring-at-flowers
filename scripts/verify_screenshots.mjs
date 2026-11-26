@@ -1,33 +1,42 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-// Load environment variables from .env.local and .env if they exist
-for (const envFile of [".env.local", ".env"]) {
-	if (fs.existsSync(envFile)) {
-		const content = fs.readFileSync(envFile, "utf-8");
-		for (const line of content.split("\n")) {
-			const match = line.match(/^\s*([^#=]+)\s*=\s*(.*)\s*$/);
-			if (match) {
-				const key = match[1].trim();
-				let val = match[2].trim();
-				// Strip optional quotes
-				if (
-					(val.startsWith('"') && val.endsWith('"')) ||
-					(val.startsWith("'") && val.endsWith("'"))
-				) {
-					val = val.slice(1, -1);
-				}
-				if (!process.env[key]) {
-					process.env[key] = val;
+export function loadEnvFiles(cwd = process.cwd()) {
+	for (const envFile of [".env.local", ".env"]) {
+		const envPath = path.join(cwd, envFile);
+		if (fs.existsSync(envPath)) {
+			const content = fs.readFileSync(envPath, "utf-8");
+			for (const line of content.split("\n")) {
+				const match = line.match(/^\s*([^#=]+)\s*=\s*(.*)\s*$/);
+				if (match) {
+					const key = match[1].trim();
+					let val = match[2].trim();
+					// Strip optional quotes
+					if (
+						(val.startsWith('"') && val.endsWith('"')) ||
+						(val.startsWith("'") && val.endsWith("'"))
+					) {
+						val = val.slice(1, -1);
+					}
+					if (process.env[key] === undefined) {
+						process.env[key] = val;
+					}
 				}
 			}
 		}
 	}
 }
 
+export function getDefaultScreenshotsDir(cwd = process.cwd()) {
+	return path.join(cwd, "store/apple/screenshot/en-US");
+}
+
+export const DEFAULT_SCREENSHOTS_DIR = getDefaultScreenshotsDir();
+
 // Define expected screenshot criteria for Apple App Store Connect based on app-store-config.json
-const DEVICE_SPECS = {
+export const DEVICE_SPECS = {
 	iphone67: {
 		name: 'iPhone Pro Max (6.7")',
 		width: 1290,
@@ -86,9 +95,29 @@ const DEVICE_SPECS = {
 	},
 };
 
-function runCommand(cmd) {
+function defaultSleep(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function parseRetryAfterMs(headers) {
+	const raw = headers?.get?.("Retry-After") ?? headers?.get?.("retry-after");
+	if (typeof raw !== "string") return null;
+	const trimmed = raw.trim();
+	if (trimmed === "") return null;
+	const seconds = Number(trimmed);
+	if (Number.isFinite(seconds)) {
+		return seconds >= 0 ? Math.round(seconds * 1000) : null;
+	}
+	const dateMs = Date.parse(trimmed);
+	if (!Number.isNaN(dateMs)) {
+		return Math.max(0, dateMs - Date.now());
+	}
+	return null;
+}
+
+function runCommand(bin, args = []) {
 	try {
-		return execSync(cmd, {
+		return execFileSync(bin, args, {
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "ignore"],
 		}).trim();
@@ -97,45 +126,69 @@ function runCommand(cmd) {
 	}
 }
 
-function getImageInfo(filePath) {
+function parseSipsField(output, key) {
+	if (!output) return null;
+	const match = output.match(new RegExp(`^\\s+${key}:\\s*(.+)$`, "m"));
+	return match ? match[1].trim() : null;
+}
+
+function parseSipsDimension(raw) {
+	if (!raw || raw === "<nil>") return null;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function normalizeSipsFormat(raw) {
+	if (!raw) return null;
+	const normalized = raw.trim().toLowerCase();
+	if (!normalized || normalized === "<nil>" || normalized === "nil") {
+		return null;
+	}
+	return normalized;
+}
+
+export function getImageInfo(filePath) {
 	// Use sips (native macOS) to get image details
-	const widthStr = runCommand(
-		`sips -g pixelWidth "${filePath}" | awk '/pixelWidth/ {print $2}'`,
-	);
-	const heightStr = runCommand(
-		`sips -g pixelHeight "${filePath}" | awk '/pixelHeight/ {print $2}'`,
-	);
-	const hasAlphaStr = runCommand(
-		`sips -g hasAlpha "${filePath}" | awk '/hasAlpha/ {print $2}'`,
-	);
-	const formatStr = runCommand(
-		`sips -g format "${filePath}" | awk '/format/ {print $2}'`,
-	);
+	const output = runCommand("sips", [
+		"-g",
+		"pixelWidth",
+		"-g",
+		"pixelHeight",
+		"-g",
+		"hasAlpha",
+		"-g",
+		"format",
+		filePath,
+	]);
+	const widthStr = parseSipsField(output, "pixelWidth");
+	const heightStr = parseSipsField(output, "pixelHeight");
+	const hasAlphaStr = parseSipsField(output, "hasAlpha");
+	const formatStr = parseSipsField(output, "format");
 
 	return {
-		width: widthStr ? parseInt(widthStr, 10) : null,
-		height: heightStr ? parseInt(heightStr, 10) : null,
+		width: parseSipsDimension(widthStr),
+		height: parseSipsDimension(heightStr),
 		hasAlpha: hasAlphaStr === "yes",
-		format: formatStr ? formatStr.toLowerCase() : null,
+		format: normalizeSipsFormat(formatStr),
 		sizeBytes: fs.statSync(filePath).size,
 	};
 }
 
-function performOCR(filePath) {
+export function performOCR(filePath) {
 	// Use tesseract if available
-	const hasTesseract = runCommand("which tesseract");
+	const hasTesseract = runCommand("which", ["tesseract"]);
 	if (!hasTesseract) {
 		return { available: false, text: "" };
 	}
 
-	const text = runCommand(`tesseract "${filePath}" stdout --psm 3 2>/dev/null`);
+	const text = runCommand("tesseract", [filePath, "stdout", "--psm", "3"]);
 	return {
 		available: true,
 		text: text || "",
 	};
 }
 
-function scanScreenshotsDir(baseDir) {
+export function scanScreenshotsDir(baseDir) {
 	const filesList = [];
 
 	function recurse(dir) {
@@ -158,11 +211,23 @@ function scanScreenshotsDir(baseDir) {
 	return filesList;
 }
 
-async function analyzeScreenshotWithGemini(filePath, apiKey) {
+export async function analyzeScreenshotWithGemini(
+	filePath,
+	apiKey,
+	options = {},
+) {
+	const {
+		fetchImpl = globalThis.fetch,
+		sleepImpl = defaultSleep,
+		backoffBaseMs = 5000,
+		maxAttempts = 3,
+		readFile = fs.readFileSync,
+	} = options;
+
 	const model = "gemini-2.5-flash";
 	const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-	const buffer = fs.readFileSync(filePath);
+	const buffer = readFile(filePath);
 	const base64Image = buffer.toString("base64");
 
 	const ext = path.extname(filePath).toLowerCase();
@@ -210,13 +275,35 @@ Respond ONLY with a JSON object in this exact format:
 	};
 
 	try {
-		const resp = await fetch(url, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
-		});
+		let lastErr;
+		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+			let resp;
+			try {
+				resp = await fetchImpl(url, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(body),
+				});
+			} catch (networkErr) {
+				lastErr = networkErr;
+				if (attempt === maxAttempts) throw lastErr;
+				const waitMs = backoffBaseMs * attempt;
+				console.warn(
+					`  Gemini retry ${attempt}/${maxAttempts - 1} after ${waitMs}ms (${networkErr.message})`,
+				);
+				await sleepImpl(waitMs);
+				continue;
+			}
 
-		if (!resp.ok) {
+			if (resp.ok) {
+				const json = await resp.json();
+				const responseText = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+				if (!responseText) {
+					throw new Error("No text in Gemini response");
+				}
+				return JSON.parse(responseText);
+			}
+
 			const errorText = await resp.text();
 			let errorObj;
 			try {
@@ -224,36 +311,54 @@ Respond ONLY with a JSON object in this exact format:
 			} catch (_e) {}
 
 			const errorMessage = errorObj?.error?.message || errorText;
-			const isBillingOrQuota =
-				resp.status === 429 ||
-				errorMessage.includes("prepayment credits") ||
+			const isQuotaExhaustedBody =
 				errorMessage.includes("RESOURCE_EXHAUSTED") ||
 				errorObj?.error?.status === "RESOURCE_EXHAUSTED";
+			const isPermanentBillingOrAuth =
+				resp.status === 402 ||
+				resp.status === 403 ||
+				errorMessage.includes("prepayment credits") ||
+				errorMessage.includes("API key not valid") ||
+				(resp.status !== 429 &&
+					!isQuotaExhaustedBody &&
+					/\bbilling\b/i.test(errorMessage));
 
-			if (isBillingOrQuota) {
-				console.error(
-					"\n======================================================================",
+			if (isPermanentBillingOrAuth) {
+				const fatalErr = new Error(
+					`Gemini billing/auth error (${resp.status}): ${errorMessage}`,
 				);
-				console.error(
-					"🔴 CRITICAL GEMINI API ERROR: BILLING OR QUOTA EXHAUSTED",
-				);
-				console.error(errorMessage);
-				console.error(
-					"======================================================================\n",
-				);
-				process.exit(1);
+				fatalErr.isFatalBillingOrQuota = true;
+				throw fatalErr;
 			}
 
-			throw new Error(`Gemini status ${resp.status}: ${errorText}`);
-		}
+			lastErr = new Error(`Gemini status ${resp.status}: ${errorText}`);
 
-		const json = await resp.json();
-		const responseText = json?.candidates?.[0]?.content?.parts?.[0]?.text;
-		if (!responseText) {
-			throw new Error("No text in Gemini response");
+			const retryable = resp.status === 429 || resp.status >= 500;
+			if (!retryable || attempt === maxAttempts) {
+				if (resp.status === 429 || isQuotaExhaustedBody) {
+					const quotaErr = new Error(
+						`Gemini quota exhausted after ${attempt} attempts (${resp.status}): ${errorMessage}`,
+					);
+					quotaErr.isFatalBillingOrQuota = true;
+					throw quotaErr;
+				}
+				throw lastErr;
+			}
+
+			const retryAfterMs = parseRetryAfterMs(resp.headers);
+			const waitMs =
+				retryAfterMs !== null ? retryAfterMs : backoffBaseMs * attempt;
+
+			console.warn(
+				`  Gemini retry ${attempt}/${maxAttempts - 1} after ${waitMs}ms (${resp.status})`,
+			);
+			await sleepImpl(waitMs);
 		}
-		return JSON.parse(responseText);
+		throw lastErr;
 	} catch (err) {
+		if (err?.isFatalBillingOrQuota) {
+			throw err;
+		}
 		console.warn(
 			`  Gemini Vision analysis failed for ${path.basename(filePath)}: ${err.message}`,
 		);
@@ -261,7 +366,12 @@ Respond ONLY with a JSON object in this exact format:
 	}
 }
 
-async function analyzeScreenshot(filePath, baseDir, apiKey) {
+export async function analyzeScreenshot(
+	filePath,
+	baseDir,
+	apiKey,
+	options = {},
+) {
 	const relativePath = path.relative(baseDir, filePath);
 	const fileName = path.basename(filePath);
 
@@ -274,8 +384,8 @@ async function analyzeScreenshot(filePath, baseDir, apiKey) {
 		}
 	}
 
-	const fileInfo = getImageInfo(filePath);
-	const ocr = performOCR(filePath);
+	const fileInfo = options.fileInfo ?? getImageInfo(filePath);
+	const ocr = options.ocr ?? performOCR(filePath);
 
 	const issues = [];
 	const warnings = [];
@@ -309,7 +419,7 @@ async function analyzeScreenshot(filePath, baseDir, apiKey) {
 
 		if (!isPortrait && !isLandscape) {
 			issues.push(
-				`Invalid dimensions for **${spec.name}**: Got \`${fileInfo.width}x${fileInfo.height}\`. Expected \`${spec.width}x${spec.height}\` (Portrait) or \`${spec.altWidth}x${spec.altHeight}\` (Landscape).`,
+				`Invalid dimensions for **${spec.name}**: Got \`${fileInfo.width ?? "?"}x${fileInfo.height ?? "?"}\`. Expected \`${spec.width}x${spec.height}\` (Portrait) or \`${spec.altWidth}x${spec.altHeight}\` (Landscape).`,
 			);
 		} else {
 			passes.push(
@@ -378,7 +488,11 @@ async function analyzeScreenshot(filePath, baseDir, apiKey) {
 
 	// AI Multimodal Vision Analysis (Detecting popups, system permission alerts, springboard launcher, etc.)
 	if (apiKey) {
-		const aiResult = await analyzeScreenshotWithGemini(filePath, apiKey);
+		const aiResult = await analyzeScreenshotWithGemini(
+			filePath,
+			apiKey,
+			options.geminiOptions,
+		);
 		if (aiResult) {
 			if (aiResult.isHomeScreen) {
 				issues.push(
@@ -434,63 +548,158 @@ async function analyzeScreenshot(filePath, baseDir, apiKey) {
 	};
 }
 
-function fixScreenshot(analysis) {
+function buildJimpStripAlphaArgs(targetPath) {
+	const jimpUrl = import.meta.resolve("jimp");
+	const inlineScript = [
+		'import fs from "node:fs";',
+		`import { Jimp, PNGColorType } from ${JSON.stringify(jimpUrl)};`,
+		"const p = process.argv[1];",
+		"const img = await Jimp.read(p);",
+		"const d = img.bitmap.data;",
+		"for (let i = 0; i < d.length; i += 4) {",
+		"const a = d[i + 3];",
+		"if (a < 255) {",
+		"const alpha = a / 255;",
+		"const inv = 1 - alpha;",
+		"d[i] = Math.round(d[i] * alpha + 10 * inv);",
+		"d[i + 1] = Math.round(d[i + 1] * alpha + 10 * inv);",
+		"d[i + 2] = Math.round(d[i + 2] * alpha + 10 * inv);",
+		"d[i + 3] = 255;",
+		"}",
+		"}",
+		'fs.writeFileSync(p, await img.getBuffer("image/png", { colorType: PNGColorType.COLOR }));',
+	].join(" ");
+	return ["--input-type=module", "-e", inlineScript, targetPath];
+}
+
+export function fixScreenshot(
+	analysis,
+	baseDir = getDefaultScreenshotsDir(),
+	options = {},
+) {
+	const { runCommandImpl = runCommand, getImageInfoImpl = getImageInfo } =
+		options;
 	const { filePath, fileInfo, relativePath } = analysis;
 	let fixed = false;
+	let fixFailed = false;
 	const actionsTaken = [];
 
-	const fileExt = path.extname(filePath).toLowerCase();
+	const rawExt = path.extname(filePath);
 	const dirName = path.dirname(filePath);
-	const baseName = path.basename(filePath, fileExt);
+	const baseName = path.basename(filePath, rawExt);
 
 	let targetPath = filePath;
 
 	if (fileInfo.format !== "png") {
 		const pngPath = path.join(dirName, `${baseName}.png`);
 		console.log(`Converting ${relativePath} to PNG...`);
-		const convertCmd = runCommand(`which convert`);
-		if (convertCmd) {
-			runCommand(`convert "${filePath}" -alpha off "${pngPath}"`);
-		} else {
-			runCommand(`sips -s format png "${filePath}" --out "${pngPath}"`);
+		const convertCmd = runCommandImpl("which", ["magick"])
+			? "magick"
+			: runCommandImpl("which", ["convert"])
+				? "convert"
+				: null;
+		const cmdResult = convertCmd
+			? runCommandImpl(convertCmd, [filePath, "-alpha", "off", pngPath])
+			: runCommandImpl("sips", [
+					"-s",
+					"format",
+					"png",
+					filePath,
+					"--out",
+					pngPath,
+				]);
+
+		const conversionSucceeded =
+			cmdResult !== null &&
+			fs.existsSync(pngPath) &&
+			fs.statSync(pngPath).size > 0;
+
+		if (!conversionSucceeded) {
+			if (pngPath !== filePath && fs.existsSync(pngPath)) {
+				try {
+					if (fs.statSync(pngPath).size === 0) {
+						fs.unlinkSync(pngPath);
+					}
+				} catch (_e) {}
+			}
+			const errMsg = `Failed to convert ${relativePath} to PNG (original file preserved).`;
+			console.warn(`  ⚠️ ${errMsg}`);
+			if (Array.isArray(analysis.issues) && !analysis.issues.includes(errMsg)) {
+				analysis.issues.push(errMsg);
+			}
+			return { fixed: false, fixFailed: true, actionsTaken };
 		}
-		fs.unlinkSync(filePath);
+
+		if (pngPath !== filePath && fs.existsSync(filePath)) {
+			const pngStat = fs.statSync(pngPath);
+			const origStat = fs.statSync(filePath);
+			const sameFile =
+				pngStat.ino !== 0 &&
+				pngStat.dev === origStat.dev &&
+				pngStat.ino === origStat.ino;
+			if (!sameFile) {
+				fs.unlinkSync(filePath);
+			}
+		}
 		targetPath = pngPath;
 		actionsTaken.push(`Converted format to PNG: \`${path.basename(pngPath)}\``);
 		fixed = true;
 
 		analysis.filePath = pngPath;
-		analysis.relativePath = path.relative(
-			path.join(process.cwd(), "app_store_assets/screenshots"),
-			pngPath,
-		);
-		analysis.fileInfo = getImageInfo(pngPath);
+		analysis.relativePath = path.relative(baseDir, pngPath);
+		analysis.fileInfo = getImageInfoImpl(pngPath);
 	}
 
-	if (analysis.fileInfo.hasAlpha) {
+	if (analysis.fileInfo?.hasAlpha) {
 		console.log(`Stripping alpha channel from ${analysis.relativePath}...`);
-		const convertCmd = runCommand(`which convert`);
-		if (convertCmd) {
-			runCommand(
-				`convert "${targetPath}" -background white -alpha remove -alpha off "${targetPath}"`,
-			);
-			actionsTaken.push("Removed alpha channel using ImageMagick");
-			fixed = true;
-		} else {
-			runCommand(
-				`sips -s format png "${targetPath}" --setProperty formatOptions default --out "${targetPath}"`,
-			);
-			actionsTaken.push("Removed alpha channel using sips");
-			fixed = true;
+		const convertCmd = runCommandImpl("which", ["magick"])
+			? "magick"
+			: runCommandImpl("which", ["convert"])
+				? "convert"
+				: null;
+		const toolName = convertCmd ? "ImageMagick" : "jimp";
+		const alphaResult = convertCmd
+			? runCommandImpl(convertCmd, [
+					targetPath,
+					"-background",
+					"#0a0a0a",
+					"-alpha",
+					"remove",
+					"-alpha",
+					"off",
+					targetPath,
+				])
+			: runCommandImpl(process.execPath, buildJimpStripAlphaArgs(targetPath));
+
+		let updatedInfo = null;
+		try {
+			updatedInfo = getImageInfoImpl(targetPath);
+		} catch (_e) {
+			updatedInfo = null;
+		}
+		if (updatedInfo) {
+			analysis.fileInfo = updatedInfo;
 		}
 
-		analysis.fileInfo = getImageInfo(targetPath);
+		if (alphaResult !== null && updatedInfo?.hasAlpha === false) {
+			actionsTaken.push(`Removed alpha channel using ${toolName}`);
+			fixed = true;
+		} else {
+			fixFailed = true;
+			const errMsg = `Failed to remove alpha channel from ${analysis.relativePath} using ${toolName}.`;
+			console.warn(`  ⚠️ ${errMsg}`);
+			if (Array.isArray(analysis.issues) && !analysis.issues.includes(errMsg)) {
+				analysis.issues.push(errMsg);
+			}
+		}
 	}
 
-	return { fixed, actionsTaken };
+	return fixFailed
+		? { fixed, fixFailed: true, actionsTaken }
+		: { fixed, actionsTaken };
 }
 
-function generateMarkdownReport(results, _baseDir) {
+export function generateMarkdownReport(results, baseDir = "") {
 	let md = `# App Store Screenshot Quality Control Report\n\n`;
 	md += `*Generated on: ${new Date().toLocaleString()}*\n\n`;
 
@@ -505,7 +714,7 @@ function generateMarkdownReport(results, _baseDir) {
 
 	if (totalIssues > 0) {
 		md += `> [!CAUTION]\n`;
-		md += `> **${totalIssues} critical issues detected!** Screenshots containing alpha channels, incorrect dimensions, or showing developer menu screens will be rejected by Apple App Store Connect. Use the \`pnpm run qc-screenshots -- --fix\` command to resolve alpha channels and formats automatically.\n\n`;
+		md += `> **${totalIssues} critical issues detected!** Screenshots containing alpha channels, incorrect dimensions, or showing developer menu screens will be rejected by Apple App Store Connect. Use the \`pnpm run screenshots:verify -- --fix\` command to resolve alpha channels and formats automatically.\n\n`;
 	} else {
 		md += `> [!TIP]\n`;
 		md += `> No critical technical blocking issues found. Make sure the screenshot content matches your latest design expectations.\n\n`;
@@ -514,10 +723,16 @@ function generateMarkdownReport(results, _baseDir) {
 	md += `## Detailed Results\n\n`;
 
 	for (const res of results) {
-		md += `### \`${res.relativePath}\`\n\n`;
-		md += `- **Path**: [${path.basename(res.filePath)}](file://${res.filePath})\n`;
+		const relRaw =
+			res.relativePath ||
+			(baseDir
+				? path.relative(baseDir, res.filePath)
+				: path.basename(res.filePath));
+		const posixRelPath = relRaw.split(path.sep).join("/");
+		md += `### \`${posixRelPath}\`\n\n`;
+		md += `- **Path**: [${path.basename(res.filePath)}](./${posixRelPath})\n`;
 		md += `- **Format**: ${res.fileInfo.format ? res.fileInfo.format.toUpperCase() : "Unknown"}\n`;
-		md += `- **Dimensions**: \`${res.fileInfo.width} x ${res.fileInfo.height} px\`\n`;
+		md += `- **Dimensions**: \`${res.fileInfo.width ?? "?"} x ${res.fileInfo.height ?? "?"} px\`\n`;
 		md += `- **Alpha Channel**: ${res.fileInfo.hasAlpha ? "🔴 Yes (Rejected by Apple)" : "🟢 No"}\n`;
 		md += `- **File Size**: \`${(res.fileInfo.sizeBytes / (1024 * 1024)).toFixed(2)} MB\`\n\n`;
 
@@ -555,9 +770,15 @@ function generateMarkdownReport(results, _baseDir) {
 	return md;
 }
 
-async function main() {
-	const baseDir = path.join(process.cwd(), "app_store_assets/screenshots");
-	const fixArg = process.argv.includes("--fix");
+export async function main(argv = process.argv.slice(2)) {
+	loadEnvFiles();
+
+	const dirIdx = argv.indexOf("--dir");
+	const baseDir =
+		dirIdx !== -1 && argv[dirIdx + 1]
+			? path.resolve(argv[dirIdx + 1])
+			: getDefaultScreenshotsDir();
+	const fixArg = argv.includes("--fix");
 	const apiKey = process.env.GEMINI_API_KEY;
 
 	console.log(`Starting Screenshot QC Scanner in: ${baseDir}`);
@@ -572,45 +793,60 @@ async function main() {
 
 	if (!fs.existsSync(baseDir)) {
 		console.error(`Error: Screenshots directory not found at ${baseDir}`);
-		process.exit(1);
+		process.exitCode = 1;
+		return;
 	}
 
 	const files = scanScreenshotsDir(baseDir);
 	if (files.length === 0) {
-		console.log(
-			"No screenshots found in app_store_assets/screenshots/ directory.",
-		);
-		process.exit(0);
+		console.log(`No screenshots found in ${baseDir} directory.`);
+		return;
 	}
 
 	const results = [];
 	let count = 0;
 
-	for (const file of files) {
-		if (count > 0 && apiKey) {
-			// Avoid rate limits of free-tier Gemini API (15 RPM)
-			await new Promise((r) => setTimeout(r, 5000));
-		}
-		console.log(`Scanning: ${path.relative(baseDir, file)}...`);
-		const analysis = await analyzeScreenshot(file, baseDir, apiKey);
-		count++;
-
-		if (fixArg) {
-			const fixResult = fixScreenshot(analysis);
-			if (fixResult.fixed) {
-				console.log(`Fixed issues: ${fixResult.actionsTaken.join(", ")}`);
-				const reanalysis = await analyzeScreenshot(
-					analysis.filePath,
-					baseDir,
-					apiKey,
-				);
-				reanalysis.fixedActions = fixResult.actionsTaken;
-				results.push(reanalysis);
-				continue;
+	try {
+		for (const file of files) {
+			if (count > 0 && apiKey) {
+				// Avoid rate limits of free-tier Gemini API (15 RPM)
+				await defaultSleep(5000);
 			}
-		}
+			console.log(`Scanning: ${path.relative(baseDir, file)}...`);
+			const analysis = await analyzeScreenshot(file, baseDir, apiKey);
+			count++;
 
-		results.push(analysis);
+			if (fixArg) {
+				const fixResult = fixScreenshot(analysis, baseDir);
+				if (fixResult.fixed) {
+					console.log(`Fixed issues: ${fixResult.actionsTaken.join(", ")}`);
+					const reanalysis = await analyzeScreenshot(
+						analysis.filePath,
+						baseDir,
+						apiKey,
+					);
+					reanalysis.fixedActions = fixResult.actionsTaken;
+					results.push(reanalysis);
+					continue;
+				}
+			}
+
+			results.push(analysis);
+		}
+	} catch (err) {
+		if (err?.isFatalBillingOrQuota) {
+			console.error(
+				"\n======================================================================",
+			);
+			console.error("🔴 CRITICAL GEMINI API ERROR: BILLING OR QUOTA EXHAUSTED");
+			console.error(err.message);
+			console.error(
+				"======================================================================\n",
+			);
+			process.exitCode = 1;
+			return;
+		}
+		throw err;
 	}
 
 	console.log("\n======================================");
@@ -624,10 +860,16 @@ async function main() {
 		totalIssues += res.issues.length;
 		totalWarnings += res.warnings.length;
 
+		const formatLabel = res.fileInfo.format
+			? res.fileInfo.format.toUpperCase()
+			: "UNKNOWN";
+		const widthLabel = res.fileInfo.width ?? "?";
+		const heightLabel = res.fileInfo.height ?? "?";
+
 		console.log(`\nFile: ${res.relativePath}`);
-		console.log(`  Dimensions: ${res.fileInfo.width}x${res.fileInfo.height}`);
+		console.log(`  Dimensions: ${widthLabel}x${heightLabel}`);
 		console.log(
-			`  Format: ${res.fileInfo.format.toUpperCase()} | Alpha Channel: ${res.fileInfo.hasAlpha ? "YES (🔴 CRITICAL)" : "NO"}`,
+			`  Format: ${formatLabel} | Alpha Channel: ${res.fileInfo.hasAlpha ? "YES (🔴 CRITICAL)" : "NO"}`,
 		);
 
 		if (res.issues.length > 0) {
@@ -666,8 +908,25 @@ async function main() {
 		console.log(
 			"Tip: Run this script with the --fix argument to automatically resolve alpha channels and format mismatches:",
 		);
-		console.log("     pnpm run qc-screenshots -- --fix\n");
+		console.log("     pnpm run screenshots:verify -- --fix\n");
 	}
 }
 
-main();
+function isMainModule() {
+	if (!process.argv[1]) return false;
+	try {
+		return (
+			fs.realpathSync(fileURLToPath(import.meta.url)) ===
+			fs.realpathSync(path.resolve(process.argv[1]))
+		);
+	} catch {
+		return false;
+	}
+}
+
+if (isMainModule()) {
+	main().catch((err) => {
+		console.error("Fatal error:", err);
+		process.exitCode = 1;
+	});
+}

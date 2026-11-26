@@ -1,6 +1,6 @@
 # Privacy Policy for Specimen Sandbox
 
-**Last Updated:** April 25, 2025
+**Last Updated:** November 26, 2026
 
 ## Introduction
 
@@ -8,37 +8,45 @@ This Privacy Policy explains how Specimen Sandbox ("we", "our", or "us") handles
 
 ## Location Data
 
-The App requests your device's approximate location **once** — the first time you open it — solely to determine your US state. This is used to select flowers native to your region. The resolved state code (e.g. `CA`) is stored on your device and is **never** transmitted to us or any third party. The underlying coordinates are discarded immediately after the state is resolved. You can clear this cache at any time by reinstalling the App or clearing its local storage.
+The App requests your device's approximate location **once** — the first time you open it — solely to determine your US state, Canadian province, or supported country/region (across 112 supported regional buckets). This is used to select flowers native to your region. The resolved region code (e.g. `CA`, `CA-ON`, or `MX-MEX`) is stored on your device via `AsyncStorage` and is **never** transmitted to us or any third party. The underlying coordinates are discarded immediately after the region is resolved. You can reset this cache at any time by using the in-app "Update location" control, reinstalling the App, or clearing its local storage.
 
-If you decline the location prompt, or if you are outside the United States, the App falls back to a default flower bucket and continues to function normally.
+If you decline the location prompt, or if your location is outside a specific regional bucket, the App falls back to the `default` flower bucket and continues to function normally. Travel Mode also lets users browse other supported regions locally on-device without transmitting location data.
 
 ## Data Collection and Usage
 
-Beyond the one-time region resolution described above, **we do not collect any personal information through our App.** This includes, but is not limited to:
+Beyond the one-time local region resolution described above, **we do not collect personal information, analytics, or advertising identifiers through our App.** This includes, but is not limited to:
 
 - Personal identifiers (name, email address, phone number)
 - Precise or persistent location data
-- Financial information
+- Financial or credit card information (handled exclusively by Apple App Store / Google Play Billing)
 - Health information
 - Browsing history
 - User content
 - Biometric data
-- Usage data
-- Device information
+- Usage tracking or behavioral analytics
+- Advertising device IDs
 
-The App fetches its daily flower image and sidecar JSON from a static GitHub Pages CDN. These are standard HTTP requests that include no identifying information beyond what your network stack normally provides.
+### 100% Offline Species Search & Local Device Storage
+
+- **Offline Botanical Search**: In-app species search executes **100% offline on-device** using SQLite FTS5/BM25 full-text and tokenized keyword matching against the bundled read-only species database (`expo-sqlite`), with an in-memory fallback on Web. Search queries never leave your device and are never sent to Google Gemini or any external server.
+- **Local Storage**: `AsyncStorage` stores only non-personal local state: your resolved/Travel Mode region code, cached daily flower metadata/image reference, and daily free search quota state.
+
+The App fetches pre-generated daily flower images and sidecar JSON from a static GitHub Pages CDN. These are standard HTTPS requests that include no personal or account identifiers.
 
 ## Children's Privacy (COPPA Compliance)
 
-Our App does not collect personal information from anyone, including children under the age of 13. We are fully compliant with the Children's Online Privacy Protection Act (COPPA). The App is suitable for users of all ages, and no parental consent mechanisms are required as no personal information is collected.
+Our App does not collect personal information from anyone, including children under the age of 13. We are compliant with the Children's Online Privacy Protection Act (COPPA) and the App is suitable for general audiences.
 
 ## European Union Users (GDPR Compliance)
 
-As our App does not collect, process, or store any personal data, the provisions of the General Data Protection Regulation (GDPR) regarding data subject rights, data processors, and data controllers are not applicable. However, we remain committed to the principles of data protection and privacy outlined in the GDPR.
+Specimen Sandbox does not maintain user accounts or collect personal profiles on remote servers. Coarse region resolution and species searches happen locally on-device, and optional In-App Purchases are processed by Apple App Store or Google Play Billing and synced anonymously via RevenueCat using an anonymous app user ID solely for entitlement verification.
 
-## Third-Party Services
+## Third-Party Services & In-App Purchases
 
-Our App does not utilize any third-party services, analytics tools, or advertising networks that would collect data from users. There are no embedded links to external websites or services within the App.
+The App does not use analytics SDKs, advertising networks, or client-side AI/Gemini API calls. External network communication is strictly limited to:
+
+- **GitHub Pages (Static CDN)**: Serves pre-generated daily botanical imagery and sidecar metadata over HTTPS without user identifiers.
+- **RevenueCat, Apple App Store & Google Play Billing**: Optional Premium Pass subscriptions and lifetime unlocks are processed directly by Apple App Store or Google Play Billing and verified anonymously through RevenueCat using an anonymous app user ID and store purchase receipt/token. Specimen Sandbox never collects or stores credit card numbers, billing addresses, or payment credentials.
 
 ## Changes to Our Privacy Policy
 
@@ -46,26 +54,25 @@ We may update our Privacy Policy from time to time. We will notify you of any ch
 
 ## Contact Information
 
-If you have any questions or concerns about this Privacy Policy, please contact us at:
+If you have any questions or concerns about this Privacy Policy, please contact us via:
 
-- Email: beilsco@gmail.com
 - GitHub Issues: [https://github.com/TheScottyB/playing-in-the-sandbox-staring-at-flowers/issues](https://github.com/TheScottyB/playing-in-the-sandbox-staring-at-flowers/issues)
 
 ## California Privacy Rights
 
-Under California law, California residents have specific rights regarding their personal information. However, as our App does not collect any personal information, these provisions do not create any additional obligations or rights.
+Under California law, California residents have specific rights regarding their personal information. Specimen Sandbox does not sell personal information or maintain personal user profiles.
 
 ## International Data Transfers
 
-As we do not collect any personal data, there are no international data transfers taking place through our App.
+Specimen Sandbox does not transfer personal profiles or location coordinates off-device. Static CDN fetches go to GitHub Pages, and optional store purchase receipts are verified by Apple App Store, Google Play Billing, and RevenueCat strictly for entitlement status.
 
 ## Data Security
 
-Despite not collecting personal data, we implement appropriate technical measures to protect the security and integrity of our App. Our App uses standard HTTPS for any network communications, which are limited to essential application functionality.
+We implement appropriate technical measures to protect the security and integrity of our App. All external communications use standard HTTPS and are strictly limited to daily static content retrieval and anonymous store entitlement verification.
 
 ## Data Retention
 
-As no personal data is collected, we do not have any data retention policies for personal information.
+Specimen Sandbox retains no personal profiles on developer servers. Local region, daily cache, and search quota state remain only on your device until cleared or uninstalled.
 
 ## Your Consent
 

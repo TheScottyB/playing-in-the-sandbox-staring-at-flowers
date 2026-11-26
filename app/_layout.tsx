@@ -21,13 +21,9 @@ if (process.env.EXPO_PUBLIC_SCREENSHOT_MODE === "true") {
 
 export default function RootLayout() {
 	const colorScheme = useColorScheme();
-	console.log(
-		"EXPO_PUBLIC_SCREENSHOT_MODE in layout:",
-		process.env.EXPO_PUBLIC_SCREENSHOT_MODE,
-	);
 
 	useEffect(() => {
-		initPurchases();
+		void initPurchases();
 		if (process.env.EXPO_PUBLIC_SCREENSHOT_MODE === "true") {
 			console.log(
 				"DevMenuPreferences native module is present:",

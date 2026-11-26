@@ -1,5 +1,5 @@
 # Automated screenshot capture flow
-appId: host.exp.Exponent
+appId: com.djscottyb.playinginthesandoxlookingatflowers
 ---
 - runFlow: subflows/connect.yml
 
@@ -27,7 +27,7 @@ appId: host.exp.Exponent
     timeout: 25000
 
 # Scene 1: Front Card
-- takeScreenshot: app_store_assets/screenshots/${PREFIX}
+- takeScreenshot: ${SCREENSHOT_DIR || 'store/apple/screenshot/_staging'}/${PREFIX}
 
 # Scene 2: Back Card
 - tapOn: ".*TAP TO READ.*"
@@ -36,7 +36,7 @@ appId: host.exp.Exponent
     timeout: 5000
 - waitForAnimationToEnd:
     timeout: 3000
-- takeScreenshot: app_store_assets/screenshots/${PREFIX}_back
+- takeScreenshot: ${SCREENSHOT_DIR || 'store/apple/screenshot/_staging'}/${PREFIX}_back
 
 # Flip back to the front
 - tapOn: ".*TAP TO FLIP BACK.*"
@@ -51,7 +51,7 @@ appId: host.exp.Exponent
 - extendedWaitUntil:
     visible: "Today →"
     timeout: 5000
-- takeScreenshot: app_store_assets/screenshots/${PREFIX}_yesterday
+- takeScreenshot: ${SCREENSHOT_DIR || 'store/apple/screenshot/_staging'}/${PREFIX}_yesterday
 
 # Return to Today
 - tapOn: "Today →"
@@ -59,17 +59,18 @@ appId: host.exp.Exponent
     visible: ".*TAP TO READ.*"
     timeout: 5000
 
-# Scene 4: Search Vibe
+# Scene 4: Botanical Search
 - tapOn: "🔍 SEARCH"
 - extendedWaitUntil:
-    visible: "Vector Vibe Search"
+    visible: "Botanical Search"
     timeout: 5000
+- tapOn: "e.g. purple spring poppy or desert cactus..."
 - inputText: "poppy"
 - tapOn: "Search"
 - extendedWaitUntil:
     visible: ".*match.*"
     timeout: 8000
-- takeScreenshot: app_store_assets/screenshots/${PREFIX}_search
+- takeScreenshot: ${SCREENSHOT_DIR || 'store/apple/screenshot/_staging'}/${PREFIX}_search
 
 # Close Search Modal
 - tapOn: "Close"

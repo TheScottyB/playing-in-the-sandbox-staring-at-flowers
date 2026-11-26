@@ -1,14 +1,16 @@
 import { LinearGradient } from "expo-linear-gradient";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
 	ActivityIndicator,
 	Alert,
 	Linking,
 	Modal,
+	Platform,
 	Pressable,
 	StyleSheet,
 	Text,
 	View,
+	type ViewStyle,
 } from "react-native";
 import {
 	getSubscriptionOfferings,
@@ -35,12 +37,17 @@ export default function PremiumModal({
 	const [selectedPackageId, setSelectedPackageId] = useState<string>("");
 	const [loadingOfferings, setLoadingOfferings] = useState(true);
 	const [offeringsError, setOfferingsError] = useState(false);
+	const loadSeqRef = useRef(0);
 
 	async function loadOfferings() {
+		const reqId = ++loadSeqRef.current;
 		setLoadingOfferings(true);
 		setOfferingsError(false);
+		setOfferings([]);
+		setSelectedPackageId("");
 		try {
 			const pkgs = await getSubscriptionOfferings();
+			if (reqId !== loadSeqRef.current) return;
 			setOfferings(pkgs);
 			if (pkgs.length > 0) {
 				// Default to the monthly plan, else the first package. Match on
@@ -51,13 +58,19 @@ export default function PremiumModal({
 					pkgs.find((p) => p.packageType === "MONTHLY") || pkgs[0];
 				setSelectedPackageId(defaultPkg.identifier);
 			} else {
+				setSelectedPackageId("");
 				setOfferingsError(true);
 			}
 		} catch (e) {
+			if (reqId !== loadSeqRef.current) return;
 			console.error("Failed to load offerings:", e);
+			setOfferings([]);
+			setSelectedPackageId("");
 			setOfferingsError(true);
 		} finally {
-			setLoadingOfferings(false);
+			if (reqId === loadSeqRef.current) {
+				setLoadingOfferings(false);
+			}
 		}
 	}
 
@@ -66,10 +79,20 @@ export default function PremiumModal({
 		if (visible) {
 			loadOfferings();
 		}
+		return () => {
+			loadSeqRef.current += 1;
+		};
 	}, [visible]);
 
 	async function handlePurchase() {
 		if (!selectedPackageId) {
+			Alert.alert(
+				"Subscription Unavailable",
+				"We couldn't load the subscription options. Please check your connection and tap Retry.",
+			);
+			return;
+		}
+		if (offeringsError) {
 			Alert.alert(
 				"Subscription Unavailable",
 				"We couldn't load the subscription options. Please check your connection and tap Retry.",
@@ -137,6 +160,24 @@ export default function PremiumModal({
 		}
 	}
 
+	const selectedPkg = offerings.find((p) => p.identifier === selectedPackageId);
+	const isLifetime = selectedPkg?.packageType === "LIFETIME";
+	const billingDisclosure = isLifetime
+		? Platform.select({
+				ios: "One-time non-consumable purchase charged to your Apple Account at confirmation. Unlocks permanent Premium Pass access with no recurring charges or auto-renewal.",
+				android:
+					"One-time purchase charged to your Google Play account at confirmation. Unlocks permanent Premium Pass access with no recurring charges or auto-renewal.",
+				default:
+					"One-time purchase unlocking permanent Premium Pass access with no recurring charges or auto-renewal.",
+			})
+		: Platform.select({
+				ios: "Subscriptions auto-renew at the price selected unless cancelled at least 24 hours prior to the end of the current billing period. Payments are charged to your Apple Account. You can manage or cancel your subscription anytime in your App Store Account Settings.",
+				android:
+					"Subscriptions auto-renew at the price selected unless cancelled prior to the end of the current billing period. Payments are charged to your Google Play account. You can manage or cancel your subscription anytime in Google Play Subscriptions.",
+				default:
+					"Subscriptions auto-renew at the price selected unless cancelled prior to the end of the current billing period. You can manage or cancel your subscription anytime in your account settings.",
+			});
+
 	return (
 		<Modal
 			visible={visible}
@@ -173,10 +214,11 @@ export default function PremiumModal({
 							<Text style={styles.featureIcon}>🔍</Text>
 							<View style={styles.featureText}>
 								<Text style={styles.featureTitle}>
-									Unlimited Vector Vibe Search
+									Unlimited Botanical Search
 								</Text>
 								<Text style={styles.featureDesc}>
-									Unlimited semantic searches through offline embedding index.
+									Unlimited 100% offline searches across our local botanical
+									species database.
 								</Text>
 							</View>
 						</View>
@@ -249,22 +291,25 @@ export default function PremiumModal({
 						)}
 					</View>
 
-					{/* App Store Subscription Billing Disclosure */}
-					<Text style={styles.disclosureText}>
-						Subscriptions auto-renew at the price selected unless cancelled at
-						least 24 hours prior to the end of the current billing period.
-						Payments are charged to your iTunes Account. You can manage or
-						cancel your subscription anytime in your App Store Account Settings.
-					</Text>
+					{/* Store Billing Disclosure */}
+					<Text style={styles.disclosureText}>{billingDisclosure}</Text>
 
 					<Pressable
 						style={[
 							styles.primaryBtn,
-							(purchasing || loadingOfferings || !selectedPackageId) &&
+							(purchasing ||
+								loadingOfferings ||
+								offeringsError ||
+								!selectedPackageId) &&
 								styles.disabledBtn,
 						]}
 						onPress={handlePurchase}
-						disabled={purchasing || loadingOfferings}
+						disabled={
+							purchasing ||
+							loadingOfferings ||
+							offeringsError ||
+							!selectedPackageId
+						}
 					>
 						<LinearGradient
 							colors={[PALETTE.accent, PALETTE.accentDeep]}
@@ -332,8 +377,20 @@ const styles = StyleSheet.create({
 		width: 250,
 		height: 250,
 		borderRadius: 125,
-		backgroundColor: "rgba(242, 184, 218, 0.04)",
-		filter: "blur(80px)",
+		backgroundColor: "rgba(242, 184, 218, 0.05)",
+		...(Platform.select<ViewStyle>({
+			web: { filter: "blur(80px)" },
+			ios: {
+				shadowColor: PALETTE.accent,
+				shadowOffset: { width: 0, height: 0 },
+				shadowOpacity: 0.35,
+				shadowRadius: 60,
+			},
+			android: {
+				backgroundColor: "rgba(242, 184, 218, 0.07)",
+			},
+			default: {},
+		}) ?? {}),
 	},
 	card: {
 		width: "100%",
