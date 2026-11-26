@@ -75,7 +75,8 @@
 				}
 			],
 			"expo-sqlite",
-			"expo-asset"
+			"expo-asset",
+			"./plugins/withPodsDeploymentTarget"
 		],
 		"experiments": {
 			"typedRoutes": true
