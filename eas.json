@@ -17,7 +17,7 @@
 				"buildType": "apk"
 			},
 			"ios": {
-				"image": "latest",
+				"image": "sdk-56",
 				"resourceClass": "m-medium"
 			},
 			"cache": {
@@ -43,7 +43,7 @@
 				"buildType": "app-bundle"
 			},
 			"ios": {
-				"image": "latest",
+				"image": "sdk-56",
 				"resourceClass": "m-medium"
 			},
 			"cache": {
@@ -62,7 +62,7 @@
 				"buildType": "app-bundle"
 			},
 			"ios": {
-				"image": "latest",
+				"image": "sdk-56",
 				"resourceClass": "m-medium"
 			},
 			"cache": {
